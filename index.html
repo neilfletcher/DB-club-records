@@ -275,6 +275,17 @@
 
   .seg { max-width: 100%; flex-wrap: wrap; }
   .seg button { white-space: nowrap; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 0 18px; }
+  ol.leader { list-style: none; margin: 0; padding: 0; }
+  ol.leader li { display: grid; grid-template-columns: 22px minmax(0, 1fr) 90px auto; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--gridline); font-size: 0.86rem; }
+  ol.leader li:last-child { border-bottom: none; }
+  ol.leader .rank { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  ol.leader .who { min-width: 0; overflow-wrap: anywhere; }
+  ol.leader .who .small { display: block; }
+  ol.leader .bar { height: 8px; background: var(--gridline); border-radius: 4px; overflow: hidden; }
+  ol.leader .bar span { display: block; height: 100%; background: var(--text-secondary); border-radius: 4px; }
+  ol.leader .val { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; white-space: nowrap; }
+  @media (max-width: 400px) { ol.leader li { grid-template-columns: 22px minmax(0, 1fr) 50px auto; } .stat-grid { grid-template-columns: 1fr; } }
   .tile-row.compact { grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); }
   .tile-row.compact .tile { padding: 10px 12px; }
 
@@ -1017,6 +1028,7 @@
     honours: { season: null, bow: "all" },
     hcp: { bow: "all", sort: "hcp" },
     badges: { bow: "all" },
+    stats: { loc: "all", bow: "all", period: "all" },
     archers: { q: "" }
   };
 
@@ -1383,10 +1395,197 @@
   }
 
   // =====================================================================
+  // Stats
+  // =====================================================================
+  // Current club records, one per round, bow type, gender and indoor/outdoor
+  // (all adults, all time). Ties go to whoever shot it first.
+  function currentRecords() {
+    const best = {};
+    state.entries.forEach(function (e) {
+      if (!e.round || e.score === null || e.isLadder || !DISCIPLINE_COLOR[e.bucket]) return;
+      const k = roundKey(e) + "|" + e.bucket + "|" + e.gender2 + "|" + e.loc;
+      const b = best[k];
+      if (!b || e.score > b.score || (e.score === b.score && e.date < b.date)) best[k] = e;
+    });
+    return Object.keys(best).map(function (k) { return best[k]; });
+  }
+
+  function statPasses(e, f) {
+    if (f.bow !== "all" && e.bucket !== f.bow) return false;
+    if (f.loc !== "all" && e.loc !== f.loc) return false;
+    if (f.period === "year" && e.date.getFullYear() !== state.now.getFullYear()) return false;
+    if (f.period === "12m" && !within(e, 365)) return false;
+    return true;
+  }
+
+  function leaderCard(title, note, rows, unit, detail) {
+    rows = rows.filter(function (r) { return r.v > 0; }).sort(function (a, b) { return b.v - a.v || a.m.name.localeCompare(b.m.name); });
+    let html = '<div class="card stat-card"><h2>' + title + '</h2><p class="card-note">' + note + "</p>";
+    if (!rows.length) return html + '<p class="muted small">Nothing for this selection.</p></div>';
+    const max = rows[0].v;
+    html += '<ol class="leader">';
+    rows.slice(0, 10).forEach(function (r, i) {
+      const rank = i > 0 && rows[i - 1].v === r.v ? "=" : String(i + 1);
+      html += '<li><span class="rank">' + rank + '</span><span class="who">' + escapeHtml(r.m.name) +
+        (detail ? '<span class="muted small">' + detail(r) + "</span>" : "") + '</span><span class="bar" aria-hidden="true"><span style="width:' +
+        Math.max(4, Math.round(100 * r.v / max)) + '%"></span></span><span class="val">' + r.v.toLocaleString("en-GB") + (unit ? ' <span class="muted small">' + unit + "</span>" : "") + "</span></li>";
+    });
+    html += "</ol>";
+    if (rows.length > 10) html += '<p class="muted small">and ' + (rows.length - 10) + " more</p>";
+    return html + "</div>";
+  }
+
+  function perMember(list, valueFn) {
+    const by = {};
+    list.forEach(function (e) {
+      const id = e.member.id;
+      if (!by[id]) by[id] = { m: e.member, v: 0, list: [] };
+      by[id].v += valueFn ? valueFn(e) : 1;
+      by[id].list.push(e);
+    });
+    return Object.keys(by).map(function (k) { return by[k]; });
+  }
+
+  function splitDetail(r) {
+    const byLoc = countBy(r.list, function (e) { return e.loc; });
+    const byBow = countBy(r.list, function (e) { return e.bucket; });
+    const bows = DISCIPLINE_ORDER.filter(function (b) { return byBow[b]; }).map(function (b) { return bowDot(b) + byBow[b]; }).join(" ");
+    return (byLoc.outdoor || 0) + " out · " + (byLoc.indoor || 0) + " in" + (Object.keys(byBow).length > 1 ? " · " + bows : "");
+  }
+
+  function buildStats() {
+    const f = state.stats;
+    const list = state.entries.filter(function (e) { return statPasses(e, f) && DISCIPLINE_COLOR[e.bucket]; });
+    const records = currentRecords().filter(function (e) { return statPasses(e, f); });
+    const broken = list.filter(function (e) { return e.events.some(function (ev) { return ev.type === "record"; }); });
+    const arrows = list.reduce(function (s, e) { return s + (e.arrows || 0); }, 0);
+    const archers = new Set(list.map(function (e) { return e.member.id; })).size;
+    const rounds = new Set(list.filter(function (e) { return e.round; }).map(roundKey)).size;
+    const periodText = f.period === "year" ? "in " + state.now.getFullYear() : f.period === "12m" ? "in the last 12 months" : "on file";
+
+    let html = '<div class="card"><h2>Club stats</h2><p class="card-note">Adult members only. Club records here are the best score on each round for each bow type, men and women separately, indoor and outdoor. ' +
+      '"Held" counts records that still stand; "broken" counts every time someone beat the existing club record, including records since beaten again.</p>' +
+      '<div class="controls-row">' + segButtons("stats.loc", [["all", "Indoor and outdoor"], ["outdoor", "Outdoor"], ["indoor", "Indoor"]], f.loc) +
+      segButtons("stats.bow", bowOptions(true), f.bow) + "</div>" +
+      '<div class="controls-row">' + segButtons("stats.period", [["all", "All time"], ["12m", "Last 12 months"], ["year", String(state.now.getFullYear())]], f.period) + "</div></div>";
+
+    html += '<div class="tile-row">' +
+      tile("Scores", list.length.toLocaleString("en-GB"), periodText) +
+      tile("Archers", archers, "with scores " + periodText) +
+      tile("Arrows shot", "~" + arrows.toLocaleString("en-GB"), "on recognised rounds") +
+      tile("Rounds", rounds, "different rounds shot") +
+      tile("Club records", records.length, f.period === "all" ? "standing now" : "set " + periodText + " and still standing") +
+      tile("Records broken", broken.length, periodText) + "</div>";
+
+    html += '<div class="stat-grid">';
+    html += leaderCard("Most club records held", "Records that still stand" + (f.period === "all" ? "." : ", set " + periodText + "."), perMember(records), "", splitDetail);
+    html += leaderCard("Most club records broken", "Times each archer beat the club record " + periodText + ".", perMember(broken), "", splitDetail);
+    html += leaderCard("Most shoots", "Scores logged " + periodText + ".", perMember(list), "", null);
+    html += leaderCard("Most arrows shot", "Arrows in scores " + periodText + " (recognised rounds only).", perMember(list.filter(function (e) { return e.arrows; }), function (e) { return e.arrows; }), "", null);
+    html += leaderCard("Most personal bests", "Scores that beat the archer's previous best on that round " + periodText + ".",
+      perMember(list.filter(function (e) { return e.events.some(function (ev) { return ev.type === "pb"; }); })), "", null);
+    html += leaderCard("Most different rounds", "Different rounds shot " + periodText + ".",
+      perMember(list).map(function (r) { r.v = new Set(r.list.filter(function (e) { return e.round; }).map(roundKey)).size; return r; }), "", null);
+    if (f.loc !== "indoor") {
+      html += leaderCard("Most 252 badges", "252 badges earned " + periodText + ".",
+        perMember(list.filter(function (e) { return e.events.some(function (ev) { return ev.type === "badge"; }); })), "", null);
+    }
+    html += leaderCard("Most podium finishes", "1st, 2nd or 3rd places noted in the comments " + periodText + ".",
+      perMember(list.filter(function (e) { return e.placing && e.placing <= 3; })), "", null);
+    html += "</div>";
+
+    // Records by bow type.
+    const bows = DISCIPLINE_ORDER.filter(function (b) { return (f.bow === "all" || f.bow === b) && records.some(function (e) { return e.bucket === b; }); });
+    if (bows.length) {
+      html += '<div class="card"><h2>Records by bow type</h2><div class="table-wide-scroll"><table><thead><tr><th>Bow type</th><th class="num">Outdoor</th><th class="num">Indoor</th><th class="num">Holders</th><th>Most held by</th></tr></thead><tbody>';
+      bows.forEach(function (b) {
+        const rs = records.filter(function (e) { return e.bucket === b; });
+        const top = perMember(rs).sort(function (x, y) { return y.v - x.v; })[0];
+        html += '<tr><td class="nowrap">' + bowDot(b) + b + '</td><td class="num">' + rs.filter(function (e) { return e.loc === "outdoor"; }).length +
+          '</td><td class="num">' + rs.filter(function (e) { return e.loc === "indoor"; }).length + '</td><td class="num">' + new Set(rs.map(function (e) { return e.member.id; })).size +
+          "</td><td>" + (top ? escapeHtml(top.m.name) + ' <span class="muted small">(' + top.v + ")</span>" : "-") + "</td></tr>";
+      });
+      html += "</tbody></table></div></div>";
+    }
+
+    // Longest-standing records.
+    const oldest = records.slice().sort(function (a, b) { return a.date - b.date; }).slice(0, 10);
+    if (oldest.length) {
+      html += '<div class="card"><h2>Longest-standing records</h2><p class="card-note">Club records that have stood the longest.</p><div class="table-wide-scroll"><table><thead><tr><th>Round</th><th>Category</th><th class="num">Score</th><th>Held by</th><th>Since</th><th class="num">Years</th></tr></thead><tbody>';
+      oldest.forEach(function (e) {
+        const yrs = Math.floor((state.now - e.date) / (365.25 * 864e5));
+        html += "<tr><td>" + escapeHtml(roundLabel(roundKey(e), e)) + '</td><td class="nowrap">' + bowDot(e.bucket) + e.bucket + " · " + e.gender2.toLowerCase() + " · " + e.loc +
+          '</td><td class="num">' + e.score + "</td><td>" + escapeHtml(e.member.name) + '</td><td class="nowrap">' + fmtDate(e.date) + '</td><td class="num">' + yrs + "</td></tr>";
+      });
+      html += "</tbody></table></div></div>";
+    }
+
+    html += '<div class="stat-grid">' +
+      '<div class="card"><h2>Most shot rounds</h2><p class="card-note">Top ten rounds by scores logged ' + periodText + '.</p><div class="chart-box"><canvas id="chart-rounds" role="img" aria-label="Most shot rounds"></canvas></div></div>' +
+      '<div class="card"><h2>Scores per year</h2><p class="card-note">By bow type' + (f.loc === "all" ? "" : ", " + f.loc + " only") + '.</p><div class="chart-box"><canvas id="chart-years" role="img" aria-label="Scores per year by bow type"></canvas></div></div>' +
+      "</div>";
+    return html;
+  }
+
+  function drawStats() {
+    const f = state.stats;
+    const list = state.entries.filter(function (e) { return statPasses(e, f) && DISCIPLINE_COLOR[e.bucket] && e.round; });
+    const muted = cssVar("--text-muted");
+    const byRound = {};
+    list.forEach(function (e) { const k = roundKey(e); if (!byRound[k]) byRound[k] = { label: roundLabel(k, e), n: 0 }; byRound[k].n++; });
+    const top = Object.keys(byRound).map(function (k) { return byRound[k]; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 10);
+    if (top.length) {
+      const color = cssVar(f.bow !== "all" ? DISCIPLINE_COLOR[f.bow] : "--recurve");
+      makeChart("chart-rounds", {
+        type: "bar",
+        data: { labels: top.map(function (r) { return r.label; }), datasets: [{ label: "Scores", data: top.map(function (r) { return r.n; }), backgroundColor: color, borderRadius: 3, maxBarThickness: 22 }] },
+        options: {
+          indexAxis: "y", responsive: true, maintainAspectRatio: false, animation: false,
+          scales: {
+            x: { beginAtZero: true, grid: { color: cssVar("--gridline"), drawTicks: false }, border: { display: false }, ticks: { color: muted, font: { size: 11 }, precision: 0 } },
+            y: { grid: { display: false }, border: { color: cssVar("--baseline") }, ticks: { color: cssVar("--text-secondary"), font: { size: 11 } } }
+          },
+          plugins: { legend: { display: false }, tooltip: Object.assign(baseTooltip(), { callbacks: { label: function (c) { return c.raw + " scores"; } } }) }
+        }
+      });
+    }
+    const years = {};
+    state.entries.forEach(function (e) {
+      if (!DISCIPLINE_COLOR[e.bucket] || (f.bow !== "all" && e.bucket !== f.bow) || (f.loc !== "all" && e.loc !== f.loc)) return;
+      years[e.date.getFullYear()] = true;
+    });
+    const ys = Object.keys(years).map(Number).sort();
+    if (!ys.length) return;
+    const labels = [];
+    for (let y = ys[0]; y <= ys[ys.length - 1]; y++) labels.push(y);
+    const surface = cssVar("--surface-1");
+    const datasets = DISCIPLINE_ORDER.filter(function (b) { return f.bow === "all" || f.bow === b; }).map(function (b) {
+      const c = countBy(state.entries.filter(function (e) { return e.bucket === b && (f.loc === "all" || e.loc === f.loc); }), function (e) { return e.date.getFullYear(); });
+      return { label: b, data: labels.map(function (y) { return c[y] || 0; }), backgroundColor: cssVar(DISCIPLINE_COLOR[b]), borderColor: surface,
+        borderWidth: { top: 2 }, borderSkipped: "bottom", borderRadius: 3, maxBarThickness: 36 };
+    }).filter(function (ds) { return ds.data.some(function (v) { return v > 0; }); });
+    makeChart("chart-years", {
+      type: "bar", data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+        scales: {
+          x: { stacked: true, grid: { display: false }, border: { color: cssVar("--baseline") }, ticks: { color: muted, font: { size: 11 } } },
+          y: { stacked: true, beginAtZero: true, grid: { color: cssVar("--gridline"), drawTicks: false }, border: { display: false }, ticks: { color: muted, font: { size: 11 }, precision: 0, padding: 6 } }
+        },
+        plugins: {
+          legend: legendOpts(datasets.length > 1),
+          tooltip: Object.assign(baseTooltip(), { filter: function (i) { return i.raw > 0; }, callbacks: { label: function (c) { return c.dataset.label + ": " + c.raw; } } })
+        }
+      }
+    });
+  }
+
+  // =====================================================================
   // Rendering, tabs, events
   // =====================================================================
   const TABS = [
     { id: "records", label: "Club records", build: buildRecords },
+    { id: "stats", label: "Stats", build: buildStats, draw: drawStats },
     { id: "recent", label: "Recent", build: buildRecent, draw: drawRecent },
     { id: "classifications", label: "Classifications", build: buildHonours },
     { id: "handicaps", label: "Handicaps", build: buildHandicaps },
