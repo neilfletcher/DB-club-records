@@ -275,6 +275,22 @@
 
   .seg { max-width: 100%; flex-wrap: wrap; }
   .seg button { white-space: nowrap; }
+  button.linkish { background: none; border: none; padding: 0; font: inherit; color: var(--text-secondary); text-decoration: underline; cursor: pointer; }
+  button.linkish:disabled { opacity: 0.5; cursor: default; }
+  ul.plain { list-style: none; padding: 0; margin: 0; }
+  ul.plain li { padding: 4px 0; font-size: 0.86rem; }
+  .optout-form select { width: 100%; }
+  td .seg { flex-wrap: nowrap; }
+  td .seg button { padding: 4px 10px; }
+  .seg button:disabled { cursor: default; opacity: 0.55; }
+  .optout-form { display: flex; flex-direction: column; gap: 6px; max-width: 460px; }
+  .optout-form label { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); }
+  .optout-form label.check { font-weight: 400; display: flex; gap: 8px; align-items: flex-start; margin-top: 6px; }
+  .optout-form label.check input { margin-top: 3px; }
+  .optout-form input[type=text] { width: 100%; padding: 8px 10px; font-size: 0.9rem; }
+  .optout-form button { align-self: flex-start; margin-top: 8px; }
+  .optout-form button:disabled { opacity: 0.6; cursor: wait; }
+  .optout-msg { font-size: 0.86rem; margin: 6px 0 0; min-height: 1.2em; }
   .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 0 18px; }
   ol.leader { list-style: none; margin: 0; padding: 0; }
   ol.leader li { display: grid; grid-template-columns: 22px minmax(0, 1fr) 90px auto; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--gridline); font-size: 0.86rem; }
@@ -320,7 +336,8 @@
     A read-only view of the club record keeper's score sheets, refreshed on each visit; the last copy is kept in your browser so the page works offline.
     Junior members and junior scores are never shown.<br>
     Handicaps and classifications use the Archery GB 2023 scheme (older scores keep the handicaps recorded at the time). Classification scores come from
-    <a href="https://github.com/jatkinson1000/archery-utils" target="_blank" rel="noopener">archeryutils</a>. Spotted a mistake? Tell the record keeper; this page only reads the sheets.
+    <a href="https://github.com/jatkinson1000/archery-utils" target="_blank" rel="noopener">archeryutils</a>. Spotted a mistake? Tell the record keeper; this page only reads the sheets.<br>
+    <a href="#privacy">Privacy</a> · <a href="#admin">Site admin</a>
   </footer>
 
 </div>
@@ -997,13 +1014,18 @@
   // =====================================================================
   const CLUB_NAME = "Duston Bowmen";
   const MEMBER_IDS = (window.CLUB_MEMBERS || []).filter(function (id) { return /^[\w-]{20,}$/.test(id); });
-  const TRACKER_URL = "https://neilfletcher.github.io/DB-archery-dashboard/";
   const CONCURRENCY = 6;
   const NEW_RECORD_DAYS = 90;
   // First seasons of the 2023 Archery GB classification scheme.
   const FIRST_OUTDOOR_SEASON = 2023, FIRST_INDOOR_SEASON = 2023;
 
-  const RSTORE = { theme: "archery-theme", cache: "db-club-records:v1" };
+  const RSTORE = { theme: "archery-theme", cache: "db-club-records:v1", privacy: "db-club-records:privacy:v1" };
+  // Privacy service: a Google Apps Script web app in the site owner's own
+  // Google account (never the record keeper's Drive), and the Google sign-in
+  // client ID for the admin page. Both are set in members.js.
+  const SERVICE_URL = String(window.CLUB_SERVICE_URL || "").trim();
+  const GOOGLE_CLIENT_ID = String(window.CLUB_GOOGLE_CLIENT_ID || "").trim();
+  const WITHHELD = "Name withheld";
   const STORAGE = RSTORE; // the shared theme code reads STORAGE.theme
 
   // Juniors are never shown: any row with a junior category is dropped as
@@ -1018,7 +1040,13 @@
   // State
   // =====================================================================
   const state = {
-    entries: [],          // every adult row, all members
+    entries: [],          // every adult row, all members (opted-out names withheld)
+    visible: [],          // rows from members who haven't opted out
+    // Who is shown: mode "all" (everyone unless opted out) or "optin" (only
+    // people who have opted in). Names are held as SHA-256 fingerprints.
+    privacy: { mode: "all", out: new Set(), in: new Set() },
+    memRaw: [],           // latest sheets, with names, in memory only (never cached)
+    admin: null,          // { token, email, data, q, busy, msg } once signed in
     members: [],          // { id, name, entries, bows }
     tab: "records",
     now: new Date(),
@@ -1028,13 +1056,8 @@
     honours: { season: null, bow: "all" },
     hcp: { bow: "all", sort: "hcp" },
     badges: { bow: "all" },
-    stats: { loc: "all", bow: "all", period: "all" },
-    archers: { q: "" }
+    stats: { loc: "all", bow: "all", period: "all" }
   };
-
-  function memberLink(m) {
-    return TRACKER_URL + "?sheet=" + encodeURIComponent(m.id) + "&gid=0&name=" + encodeURIComponent(m.name);
-  }
 
   function bowDot(bow) {
     return DISCIPLINE_COLOR[bow] ? '<span class="dot" style="background:var(' + DISCIPLINE_COLOR[bow] + ')" aria-hidden="true"></span>' : "";
@@ -1056,6 +1079,35 @@
   // =====================================================================
   // Building members and events
   // =====================================================================
+  function normName(s) {
+    return String(s || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  }
+
+  function sha256(text) {
+    if (!(window.crypto && crypto.subtle && window.TextEncoder)) return Promise.resolve(null);
+    return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (buf) {
+      return Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+    });
+  }
+
+  function isHidden(hash) {
+    const p = state.privacy;
+    return p.mode === "optin" ? !(hash && p.in.has(hash)) : !!(hash && p.out.has(hash));
+  }
+
+  // Copies of the sheets with hidden people's names removed; this is what is
+  // shown and what is saved in the browser.
+  function sanitize(raw) {
+    return Promise.all(raw.map(function (r) {
+      if (!r) return null;
+      if (!r.name) return { id: r.id, rows: r.rows, name: null, withheld: true };
+      return sha256(normName(r.name)).then(function (h) {
+        const hide = isHidden(h);
+        return { id: r.id, rows: r.rows, name: hide ? null : r.name, withheld: hide };
+      });
+    })).then(function (list) { return list.filter(Boolean); });
+  }
+
   function prepare(raw) {
     const members = [];
     raw.forEach(function (r) {
@@ -1065,7 +1117,7 @@
       if (isJuniorCategory(entries[entries.length - 1].category)) return;
       const adult = entries.filter(function (e) { return !isJuniorCategory(e.category); });
       if (!adult.length) return;
-      const m = { id: r.id, name: r.name || "Unnamed archer", entries: adult };
+      const m = { id: r.id, name: r.withheld ? WITHHELD : (r.name || "Unnamed archer"), withheld: !!r.withheld, entries: adult };
       adult.forEach(function (e) { e.member = m; e.gender2 = genderOf(e.category); });
       const byBow = {};
       adult.forEach(function (e) { (byBow[e.bucket] = byBow[e.bucket] || []).push(e); });
@@ -1090,8 +1142,10 @@
       if (best[k] === undefined || e.score > best[k]) best[k] = e.score;
     });
 
-    state.members = members;
+    state.members = members.filter(function (m) { return !m.withheld; });
     state.entries = all;
+    state.visible = all.filter(function (e) { return !e.member.withheld; });
+    state.loaded = true;
   }
 
   // =====================================================================
@@ -1168,7 +1222,7 @@
 
   function buildRecent() {
     const days = state.recent.days;
-    const recent = state.entries.filter(function (e) { return within(e, days); });
+    const recent = state.visible.filter(function (e) { return within(e, days); });
     const events = [];
     recent.forEach(function (e) { e.events.forEach(function (ev) { events.push({ e: e, ev: ev }); }); });
     events.sort(function (a, b) { return b.e.date - a.e.date || EV_ORDER[a.ev.type] - EV_ORDER[b.ev.type]; });
@@ -1202,7 +1256,7 @@
 
   function drawRecent() {
     const start = new Date(state.now.getFullYear() - 2, state.now.getMonth() + 1, 1);
-    const list = state.entries.filter(function (e) { return e.date >= start && DISCIPLINE_COLOR[e.bucket]; });
+    const list = state.visible.filter(function (e) { return e.date >= start && DISCIPLINE_COLOR[e.bucket]; });
     const labels = [], keys = [];
     const d = new Date(start);
     while (d <= state.now) { labels.push(fmtMonth(d)); keys.push(d.getFullYear() * 12 + d.getMonth()); d.setMonth(d.getMonth() + 1); }
@@ -1371,30 +1425,6 @@
   }
 
   // =====================================================================
-  // Archers
-  // =====================================================================
-  function buildArchers() {
-    const q = state.archers.q.trim().toLowerCase();
-    const list = state.members.filter(function (m) { return !q || m.name.toLowerCase().indexOf(q) !== -1; })
-      .slice().sort(function (a, b) { return b.entries[b.entries.length - 1].date - a.entries[a.entries.length - 1].date; });
-    let html = '<div class="card"><h2>Archers</h2><p class="card-note">Adult members with scores on file, most recently active first. Open a personal tracker for the full history, charts and classification progress.</p>';
-    html += '<div class="controls-row"><label class="ctl">Search <input type="text" data-archer-search value="' + escapeHtml(state.archers.q) + '" placeholder="Name" autocomplete="off"></label>' +
-      '<span class="muted small">' + list.length + " of " + state.members.length + "</span></div>";
-    html += '<div class="table-wide-scroll"><table><thead><tr><th>Archer</th><th>Bow types</th><th class="num">Shoots</th><th>Since</th><th>Last shoot</th><th>Handicap</th><th></th></tr></thead><tbody>';
-    list.forEach(function (m) {
-      const hc = m.bows.filter(function (b) { return DISCIPLINE_COLOR[b]; }).map(function (b) {
-        const w = m.byBow[b].filter(function (e) { return e.hcRunning !== null; });
-        return w.length ? bowDot(b) + w[w.length - 1].hcRunning : "";
-      }).filter(Boolean).join(" ");
-      html += "<tr><td>" + escapeHtml(m.name) + "</td><td>" + m.bows.filter(function (b) { return DISCIPLINE_COLOR[b]; }).map(function (b) { return bowDot(b) + b; }).join(", ") +
-        '</td><td class="num">' + m.entries.length + '</td><td class="nowrap">' + fmtDate(m.entries[0].date) + '</td><td class="nowrap">' + fmtDate(m.entries[m.entries.length - 1].date) +
-        '</td><td class="nowrap">' + (hc || "-") + '</td><td><a href="' + escapeHtml(memberLink(m)) + '" target="_blank" rel="noopener">Tracker</a></td></tr>';
-    });
-    html += "</tbody></table></div></div>";
-    return html;
-  }
-
-  // =====================================================================
   // Stats
   // =====================================================================
   // Current club records, one per round, bow type, gender and indoor/outdoor
@@ -1455,8 +1485,9 @@
 
   function buildStats() {
     const f = state.stats;
-    const list = state.entries.filter(function (e) { return statPasses(e, f) && DISCIPLINE_COLOR[e.bucket]; });
+    const list = state.visible.filter(function (e) { return statPasses(e, f) && DISCIPLINE_COLOR[e.bucket]; });
     const records = currentRecords().filter(function (e) { return statPasses(e, f); });
+    const namedRecords = records.filter(function (e) { return !e.member.withheld; });
     const broken = list.filter(function (e) { return e.events.some(function (ev) { return ev.type === "record"; }); });
     const arrows = list.reduce(function (s, e) { return s + (e.arrows || 0); }, 0);
     const archers = new Set(list.map(function (e) { return e.member.id; })).size;
@@ -1478,7 +1509,7 @@
       tile("Records broken", broken.length, periodText) + "</div>";
 
     html += '<div class="stat-grid">';
-    html += leaderCard("Most club records held", "Records that still stand" + (f.period === "all" ? "." : ", set " + periodText + "."), perMember(records), "", splitDetail);
+    html += leaderCard("Most club records held", "Records that still stand" + (f.period === "all" ? "." : ", set " + periodText + "."), perMember(namedRecords), "", splitDetail);
     html += leaderCard("Most club records broken", "Times each archer beat the club record " + periodText + ".", perMember(broken), "", splitDetail);
     html += leaderCard("Most shoots", "Scores logged " + periodText + ".", perMember(list), "", null);
     html += leaderCard("Most arrows shot", "Arrows in scores " + periodText + " (recognised rounds only).", perMember(list.filter(function (e) { return e.arrows; }), function (e) { return e.arrows; }), "", null);
@@ -1500,7 +1531,7 @@
       html += '<div class="card"><h2>Records by bow type</h2><div class="table-wide-scroll"><table><thead><tr><th>Bow type</th><th class="num">Outdoor</th><th class="num">Indoor</th><th class="num">Holders</th><th>Most held by</th></tr></thead><tbody>';
       bows.forEach(function (b) {
         const rs = records.filter(function (e) { return e.bucket === b; });
-        const top = perMember(rs).sort(function (x, y) { return y.v - x.v; })[0];
+        const top = perMember(rs.filter(function (e) { return !e.member.withheld; })).sort(function (x, y) { return y.v - x.v; })[0];
         html += '<tr><td class="nowrap">' + bowDot(b) + b + '</td><td class="num">' + rs.filter(function (e) { return e.loc === "outdoor"; }).length +
           '</td><td class="num">' + rs.filter(function (e) { return e.loc === "indoor"; }).length + '</td><td class="num">' + new Set(rs.map(function (e) { return e.member.id; })).size +
           "</td><td>" + (top ? escapeHtml(top.m.name) + ' <span class="muted small">(' + top.v + ")</span>" : "-") + "</td></tr>";
@@ -1581,6 +1612,244 @@
   }
 
   // =====================================================================
+  // Privacy: public page and settings
+  // =====================================================================
+  function setPrivacy(p) {
+    if (!p || (p.mode !== "all" && p.mode !== "optin")) return;
+    const hex = function (list) { return new Set((list || []).filter(function (h) { return /^[0-9a-f]{64}$/.test(h); })); };
+    state.privacy = { mode: p.mode, out: hex(p.out), in: hex(p.in) };
+    store(RSTORE.privacy, JSON.stringify({ mode: p.mode, out: Array.from(state.privacy.out), in: Array.from(state.privacy.in) }));
+  }
+
+  // Saved settings first, then the live ones from the privacy service.
+  function loadPrivacy() {
+    try { setPrivacy(JSON.parse(store(RSTORE.privacy) || "null")); } catch (e) { /* ignore */ }
+    if (!SERVICE_URL) return Promise.resolve();
+    return new Promise(function (resolve) {
+      const cb = "__dbPrivacy" + Date.now();
+      const script = document.createElement("script");
+      const finish = function () { try { delete window[cb]; } catch (e) { window[cb] = undefined; } if (script.parentNode) script.parentNode.removeChild(script); resolve(); };
+      const timer = setTimeout(finish, 8000);
+      window[cb] = function (res) { clearTimeout(timer); if (res && res.ok) setPrivacy(res); finish(); };
+      script.onerror = function () { clearTimeout(timer); finish(); };
+      script.src = SERVICE_URL + (SERVICE_URL.indexOf("?") === -1 ? "?" : "&") + "action=status&callback=" + cb;
+      document.head.appendChild(script);
+    });
+  }
+
+  // POST as text/plain: a "simple" request, so Apps Script can answer
+  // without a CORS preflight and the reply is readable.
+  function api(body) {
+    return fetch(SERVICE_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); });
+  }
+
+  function buildPrivacy() {
+    const optin = state.privacy.mode === "optin";
+    let html = '<div class="card"><h2>Privacy</h2>' +
+      '<p class="card-note">This site shows club records, classifications, handicaps and 252 badges for adult members, read from the record keeper\'s score sheets. ' +
+      "It only reads those sheets and never changes them. Junior members and junior scores are never shown. " +
+      "A copy is kept in your own browser so the page works offline. The only things sent anywhere are requests made with the form below and anonymous visit counts (Google Analytics, without names or scores).</p>" +
+      '<p class="card-note">' + (optin
+        ? "Members are only named on this site if they have agreed to it. Everyone else is left off the stats, recent, classification, handicap and 252 badge pages, and any club record they hold shows as \"" + WITHHELD + "\"."
+        : "Members can ask to have their name removed. They are then left off the stats, recent, classification, handicap and 252 badge pages, and any club record they hold shows as \"" + WITHHELD + "\" so the record stays accurate.") + "</p>" +
+      "<h3>" + (optin ? "Ask to be included or removed" : "Ask to have your name removed") + "</h3>";
+    if (!SERVICE_URL) {
+      return html + '<p class="card-note">Please ask the club\'s records officer.</p></div>';
+    }
+    html += '<form class="optout-form" id="requestForm" novalidate>' +
+      '<label for="requestName">Your name, as it appears on the site</label>' +
+      '<input type="text" id="requestName" autocomplete="name" maxlength="80" required>' +
+      (optin ? '<label for="requestKind">I would like to</label><select id="requestKind"><option value="out">be removed from the site</option><option value="in">have my name shown on the site</option></select>' : "") +
+      '<label class="check"><input type="checkbox" id="requestConfirm"> This is my name, or I have the person\'s permission to ask.</label>' +
+      '<button class="btn primary" type="submit">Send request</button>' +
+      '<p class="optout-msg" id="requestMsg" role="status" aria-live="polite"></p></form>' +
+      '<p class="card-note">Requests are checked by the site admin, usually within a few days.</p></div>';
+    return html;
+  }
+
+  function submitRequest(form) {
+    const msg = document.getElementById("requestMsg");
+    const name = document.getElementById("requestName").value.trim();
+    const kindEl = document.getElementById("requestKind");
+    const kind = kindEl ? kindEl.value : "out";
+    msg.className = "optout-msg";
+    if (normName(name).length < 3) { msg.textContent = "Please enter your name."; msg.classList.add("status-warn"); return; }
+    if (!document.getElementById("requestConfirm").checked) { msg.textContent = "Please tick the box to confirm."; msg.classList.add("status-warn"); return; }
+    const button = form.querySelector("button");
+    button.disabled = true;
+    api({ action: "request", name: name, kind: kind }).then(function (res) {
+      if (!res || !res.ok) throw new Error("failed");
+      msg.textContent = "Thanks, your request has been sent. The site admin will look at it shortly.";
+      msg.classList.add("status-good");
+      form.reset();
+    }).catch(function () {
+      msg.textContent = "Sorry, that didn't go through. Please try again later, or ask the club's records officer.";
+      msg.classList.add("status-warn");
+    }).then(function () { button.disabled = false; });
+  }
+
+  // =====================================================================
+  // Site admin (Google sign-in; checked again by the privacy service)
+  // =====================================================================
+  let gisPromise = null;
+  function loadGis() {
+    if (gisPromise) return gisPromise;
+    gisPromise = new Promise(function (resolve, reject) {
+      if (window.google && google.accounts && google.accounts.id) { resolve(); return; }
+      const s = document.createElement("script");
+      s.src = "https://accounts.google.com/gsi/client";
+      s.async = true;
+      s.onload = function () { resolve(); };
+      s.onerror = function () { gisPromise = null; reject(new Error("Google sign-in couldn't load.")); };
+      document.head.appendChild(s);
+    });
+    return gisPromise;
+  }
+
+  function adminCall(body) {
+    const a = state.admin;
+    a.busy = true; a.msg = ""; render();
+    return api(Object.assign({ token: a.token }, body)).then(function (res) {
+      if (!res || !res.ok) {
+        if (res && res.error === "not-admin") { state.admin = { error: "That Google account isn't an admin for this site, or your sign-in has expired. Please sign in again." }; render(); return null; }
+        throw new Error((res && res.error) || "The request failed.");
+      }
+      a.data = res;
+      a.email = res.email || a.email;
+      if (res.status) setPrivacy(res.status);
+      return refreshShown().then(function () { setStatus(statusText("settings saved")); });
+    }).catch(function (err) {
+      a.msg = err.message || String(err);
+    }).then(function () { if (state.admin === a) { a.busy = false; render(); } });
+  }
+
+  function onGoogleCredential(response) {
+    state.admin = { token: response.credential, data: null, q: "", busy: false, msg: "" };
+    adminCall({ action: "list" });
+  }
+
+  function adminMembers() {
+    const people = {};
+    ((state.admin && state.admin.data && state.admin.data.people) || []).forEach(function (p) { people[normName(p.name)] = p; });
+    const rows = state.memRaw.map(function (r) {
+      const entries = r.rows ? r.rows.map(function (x) { return parseDate(x[0]); }).filter(Boolean) : [];
+      const last = entries.length ? new Date(Math.max.apply(null, entries)) : null;
+      const p = r.name ? people[normName(r.name)] : null;
+      if (p) p.matched = true;
+      return { id: r.id, name: r.name, last: last, status: p ? p.status : "default" };
+    });
+    const others = Object.keys(people).map(function (k) { return people[k]; }).filter(function (p) { return !p.matched; });
+    rows.sort(function (a, b) { return String(a.name || "~").localeCompare(String(b.name || "~")); });
+    return { rows: rows, others: others };
+  }
+
+  function shownFor(status) {
+    if (status === "in") return true;
+    if (status === "out") return false;
+    return state.privacy.mode !== "optin";
+  }
+
+  function buildAdmin() {
+    let html = '<div class="card"><h2>Site admin</h2>';
+    if (!SERVICE_URL || !GOOGLE_CLIENT_ID) {
+      return html + '<p class="card-note">Admin isn\'t set up yet. Add the privacy service address and the Google sign-in client ID to members.js (see the admin set-up guide).</p></div>';
+    }
+    const a = state.admin;
+    if (!a || !a.token) {
+      html += '<p class="card-note">Sign in with your Google account to manage who is shown on the site.</p>' +
+        (a && a.error ? '<p class="status-warn">' + escapeHtml(a.error) + "</p>" : "") +
+        '<div id="gsiButton" style="min-height:44px"></div></div>';
+      return html;
+    }
+    html += '<p class="card-note">Signed in as <strong>' + escapeHtml(a.email || "…") + '</strong> · <button type="button" class="linkish" data-admin="signout">Sign out</button></p>' +
+      (a.busy ? '<p class="muted small">Working…</p>' : "") + (a.msg ? '<p class="status-warn">' + escapeHtml(a.msg) + "</p>" : "") + "</div>";
+    if (!a.data) return html;
+
+    const mode = a.data.status ? a.data.status.mode : state.privacy.mode;
+    html += '<div class="card"><h2>Who is shown</h2><p class="card-note">Hidden people are left off every page except Club records, where records they hold show as "' + WITHHELD + '".</p>' +
+      '<div class="seg" role="group">' +
+      [["all", "Everyone unless they opt out"], ["optin", "Only people who have opted in"]].map(function (o) {
+        return '<button type="button" data-admin="mode" data-v="' + o[0] + '" aria-pressed="' + (mode === o[0]) + '"' + (a.busy ? " disabled" : "") + ">" + o[1] + "</button>";
+      }).join("") + "</div></div>";
+
+    const requests = a.data.requests || [];
+    html += '<div class="card"><h2>Requests</h2>';
+    if (!requests.length) html += '<p class="muted small">No requests waiting.</p>';
+    else {
+      html += '<div class="table-wide-scroll"><table><thead><tr><th>Name</th><th>Asked to</th><th>Received</th><th></th></tr></thead><tbody>';
+      requests.forEach(function (r) {
+        html += "<tr><td>" + escapeHtml(r.name) + "</td><td>" + (r.kind === "in" ? "be shown" : "be removed") + '</td><td class="nowrap">' + escapeHtml(r.when ? fmtDate(new Date(r.when)) : "") +
+          '</td><td class="nowrap"><button type="button" class="btn" data-admin="approve" data-name="' + escapeHtml(r.name) + '" data-kind="' + (r.kind === "in" ? "in" : "out") + '"' + (a.busy ? " disabled" : "") + ">Approve</button> " +
+          '<button type="button" class="btn" data-admin="dismiss" data-name="' + escapeHtml(r.name) + '"' + (a.busy ? " disabled" : "") + ">Dismiss</button></td></tr>";
+      });
+      html += "</tbody></table></div>";
+    }
+    html += "</div>";
+
+    const m = adminMembers();
+    const q = normName(a.q || "");
+    const list = m.rows.filter(function (r) { return !q || normName(r.name || "").indexOf(q) !== -1; });
+    html += '<div class="card"><h2>Archers</h2><p class="card-note">Everyone with adult scores on file. "Default" follows the setting above.</p>' +
+      '<div class="controls-row"><label class="ctl">Search <input type="text" data-admin-search value="' + escapeHtml(a.q || "") + '" autocomplete="off"></label>' +
+      '<span class="muted small">' + list.length + " of " + m.rows.length + "</span></div>" +
+      '<div class="table-wide-scroll"><table><thead><tr><th>Name</th><th>Last score</th><th>On the site</th><th>Setting</th></tr></thead><tbody>';
+    list.forEach(function (r) {
+      const shown = shownFor(r.status);
+      const btn = function (v, label) {
+        return '<button type="button" data-admin="set" data-name="' + escapeHtml(r.name || "") + '" data-v="' + v + '" aria-pressed="' + (r.status === v) + '"' + (a.busy || !r.name ? " disabled" : "") + ">" + label + "</button>";
+      };
+      html += "<tr><td>" + (r.name ? escapeHtml(r.name) : '<span class="muted">Name not loaded yet, reload the page</span>') + '</td><td class="nowrap">' + (r.last ? fmtDate(r.last) : "-") +
+        "</td><td>" + (shown ? '<span class="status-good">Shown</span>' : '<span class="status-warn">Hidden</span>') + "</td><td>" +
+        '<div class="seg" role="group">' + btn("default", "Default") + btn("in", "Show") + btn("out", "Hide") + "</div></td></tr>";
+    });
+    html += "</tbody></table></div></div>";
+
+    if (m.others.length) {
+      html += '<div class="card"><h2>Other names on the list</h2><p class="card-note">Settings for names that don\'t match anyone with scores on file (a spelling difference, or someone who has left).</p><ul class="plain">' +
+        m.others.map(function (p) {
+          return "<li>" + escapeHtml(p.name) + ' <span class="muted small">(' + (p.status === "in" ? "show" : "hide") + ')</span> <button type="button" class="linkish" data-admin="set" data-name="' +
+            escapeHtml(p.name) + '" data-v="default"' + (a.busy ? " disabled" : "") + ">Remove</button></li>";
+        }).join("") + "</ul></div>";
+    }
+    return html;
+  }
+
+  function drawAdmin() {
+    const el = document.getElementById("gsiButton");
+    if (!el) return;
+    loadGis().then(function () {
+      google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: onGoogleCredential, auto_select: false, ux_mode: "popup" });
+      google.accounts.id.renderButton(el, { theme: effectiveTheme() === "dark" ? "filled_black" : "outline", size: "large", text: "signin_with" });
+    }).catch(function (err) {
+      el.innerHTML = '<p class="status-warn">' + escapeHtml(err.message) + "</p>";
+    });
+  }
+
+  document.getElementById("panels").addEventListener("click", function (ev) {
+    const b = ev.target.closest("[data-admin]");
+    if (!b || !state.admin || b.disabled) return;
+    const act = b.dataset.admin;
+    if (act === "signout") {
+      if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
+      state.admin = null;
+      render();
+    } else if (act === "mode") adminCall({ action: "setMode", mode: b.dataset.v });
+    else if (act === "set") adminCall({ action: "setStatus", name: b.dataset.name, status: b.dataset.v });
+    else if (act === "approve") adminCall({ action: "setStatus", name: b.dataset.name, status: b.dataset.kind });
+    else if (act === "dismiss") adminCall({ action: "dismiss", name: b.dataset.name });
+  });
+
+  document.getElementById("panels").addEventListener("input", function (ev) {
+    if (!ev.target.matches("input[data-admin-search]") || !state.admin) return;
+    state.admin.q = ev.target.value;
+    const pos = ev.target.selectionStart;
+    render();
+    const el = document.querySelector("input[data-admin-search]");
+    if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) { /* ignore */ } }
+  });
+
+  // =====================================================================
   // Rendering, tabs, events
   // =====================================================================
   const TABS = [
@@ -1590,7 +1859,8 @@
     { id: "classifications", label: "Classifications", build: buildHonours },
     { id: "handicaps", label: "Handicaps", build: buildHandicaps },
     { id: "badges", label: "252 badges", build: buildBadges },
-    { id: "archers", label: "Archers", build: buildArchers }
+    { id: "privacy", label: "Privacy", build: buildPrivacy, hidden: true },
+    { id: "admin", label: "Site admin", build: buildAdmin, draw: drawAdmin, hidden: true }
   ];
 
   function tile(label, value, small) {
@@ -1601,7 +1871,7 @@
     destroyCharts();
     if (!TABS.some(function (t) { return t.id === state.tab; })) state.tab = "records";
     const tabsEl = document.getElementById("tabs");
-    tabsEl.innerHTML = TABS.map(function (t) {
+    tabsEl.innerHTML = TABS.filter(function (t) { return !t.hidden; }).map(function (t) {
       const sel = t.id === state.tab;
       return '<button type="button" role="tab" id="tab-' + t.id + '" aria-controls="panel-' + t.id + '" aria-selected="' + sel + '" tabindex="' + (sel ? 0 : -1) + '" data-tab="' + t.id + '">' + t.label + "</button>";
     }).join("");
@@ -1616,11 +1886,11 @@
     state.tab = tab;
     const h = "#" + tab;
     if (location.hash !== h) { try { history[push ? "pushState" : "replaceState"](null, "", h); } catch (e) { location.hash = h; } }
-    if (state.members.length) render();
+    if (state.loaded) render();
   }
   function tabFromHash() { const m = /^#([a-z0-9-]+)$/.exec(location.hash || ""); return m ? m[1] : "records"; }
-  window.addEventListener("popstate", function () { state.tab = tabFromHash(); if (state.members.length) render(); });
-  window.addEventListener("hashchange", function () { const t = tabFromHash(); if (t !== state.tab) { state.tab = t; if (state.members.length) render(); } });
+  window.addEventListener("popstate", function () { state.tab = tabFromHash(); if (state.loaded) render(); });
+  window.addEventListener("hashchange", function () { const t = tabFromHash(); if (t !== state.tab) { state.tab = t; if (state.loaded) render(); } });
 
   document.getElementById("tabs").addEventListener("click", function (ev) {
     const b = ev.target.closest("button[data-tab]");
@@ -1629,8 +1899,9 @@
   document.getElementById("tabs").addEventListener("keydown", function (ev) {
     const keys = { ArrowRight: 1, ArrowLeft: -1 };
     if (!(ev.key in keys)) return;
-    const i = TABS.findIndex(function (t) { return t.id === state.tab; });
-    const next = TABS[(i + keys[ev.key] + TABS.length) % TABS.length].id;
+    const shown = TABS.filter(function (t) { return !t.hidden; });
+    const i = Math.max(0, shown.findIndex(function (t) { return t.id === state.tab; }));
+    const next = shown[(i + keys[ev.key] + shown.length) % shown.length].id;
     ev.preventDefault();
     navigate(next, true);
     const el = document.getElementById("tab-" + next); if (el) el.focus();
@@ -1648,18 +1919,12 @@
     const again = document.querySelector('button[data-f="' + b.dataset.f + '"][data-v="' + b.dataset.v + '"]');
     if (again) again.focus();
   });
+  panels.addEventListener("submit", function (ev) {
+    if (ev.target.id === "requestForm") { ev.preventDefault(); submitRequest(ev.target); }
+  });
   panels.addEventListener("change", function (ev) {
     if (ev.target.matches("select[data-honours-season]")) { state.honours.season = ev.target.value; render(); const s = document.querySelector("select[data-honours-season]"); if (s) s.focus(); }
   });
-  panels.addEventListener("input", function (ev) {
-    if (!ev.target.matches("input[data-archer-search]")) return;
-    state.archers.q = ev.target.value;
-    const pos = ev.target.selectionStart;
-    render();
-    const el = document.querySelector("input[data-archer-search]");
-    if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) { /* ignore */ } }
-  });
-
   // =====================================================================
   // Loading every member's sheet (read only) with a local cache
   // =====================================================================
@@ -1711,25 +1976,49 @@
 
   function statusText(prefix) {
     const n = state.entries.length;
-    return state.members.length + " adult archers · " + n + " scores" + (prefix ? " · " + prefix : "");
+    const shown = state.members.length;
+    return shown + (shown === 1 ? " archer" : " archers") + " shown · " + n + " scores" + (prefix ? " · " + prefix : "");
+  }
+
+  function saveCache(savedAt) {
+    return sanitize(state.memRaw).then(function (clean) {
+      store(RSTORE.cache, JSON.stringify({ savedAt: savedAt, raw: clean }));
+      return clean;
+    });
+  }
+
+  // Re-apply the privacy settings to the sheets already loaded.
+  function refreshShown() {
+    return sanitize(state.memRaw).then(function (clean) {
+      prepare(clean);
+      render();
+      return saveCache(Date.now());
+    });
   }
 
   function start() {
     state.tab = tabFromHash();
     let cached = null;
     try { cached = JSON.parse(store(RSTORE.cache) || "null"); } catch (e) { cached = null; }
+    const privacyReady = loadPrivacy();
+    let live = false;
     if (cached && Array.isArray(cached.raw)) {
-      prepare(cached.raw);
-      render();
-      setStatus(statusText("saved copy from " + fmtDate(new Date(cached.savedAt)) + ", checking for updates…"));
+      state.memRaw = cached.raw;
+      sanitize(cached.raw).then(function (clean) {
+        if (live) return;
+        prepare(clean);
+        render();
+        setStatus(statusText("saved copy from " + fmtDate(new Date(cached.savedAt)) + ", checking for updates…"));
+      });
     } else {
       setStatus("Reading members' score sheets…");
     }
-    loadAll(function (done, total) {
-      if (!state.members.length) setStatus("Reading members' score sheets… " + done + " of " + total);
-    }).then(function (res) {
+    Promise.all([privacyReady, loadAll(function (done, total) {
+      if (!state.loaded) setStatus("Reading members' score sheets… " + done + " of " + total);
+    })]).then(function (both) {
+      const res = both[1];
       if (!res.raw.length) {
-        if (state.members.length) setStatus(statusText("couldn't reach the sheets, showing the copy saved " + fmtDate(new Date(cached.savedAt))), true);
+        if (state.loaded) setStatus(statusText("couldn't reach the sheets, showing the copy saved " + fmtDate(new Date(cached.savedAt))), true);
         else setStatus("Couldn't read the members' score sheets. Please try again later.", true);
         return;
       }
@@ -1738,12 +2027,13 @@
         const have = {}; res.raw.forEach(function (r) { have[r.id] = true; });
         cached.raw.forEach(function (r) { if (!have[r.id] && MEMBER_IDS.indexOf(r.id) !== -1) res.raw.push(r); });
       }
+      live = true;
       state.now = new Date();
-      prepare(res.raw);
-      render();
-      store(RSTORE.cache, JSON.stringify({ savedAt: Date.now(), raw: res.raw }));
-      setStatus(statusText("updated " + new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) +
-        (res.failed ? " · " + res.failed + (res.failed === 1 ? " sheet" : " sheets") + " couldn't be read" : "")), res.failed > 0);
+      state.memRaw = res.raw;
+      return refreshShown().then(function () {
+        setStatus(statusText("updated " + new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) +
+          (res.failed ? " · " + res.failed + (res.failed === 1 ? " sheet" : " sheets") + " couldn't be read" : "")), res.failed > 0);
+      });
     });
   }
 

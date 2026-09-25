@@ -5,6 +5,13 @@
 // sheets are dropped as they are read.
 // To add a member: open their sheet from the folder, copy the ID from the address
 // bar and add it to the list below (in quotes, followed by a comma).
+// Privacy service and admin sign-in (see "admin set-up guide.txt" in the
+// DB-club-records-admin folder). Leave both empty to switch these off.
+//   CLUB_SERVICE_URL: the Apps Script web app address, ending in /exec
+//   CLUB_GOOGLE_CLIENT_ID: the Google sign-in client ID, ending in .apps.googleusercontent.com
+window.CLUB_SERVICE_URL = "https://script.google.com/macros/s/AKfycbwKCE9npLG6aRLzaC-AbdaSIoexWYgooYCHf93-aEGma53Dwd9MJ7QQxa78g-GHxcAoeA/exec";
+window.CLUB_GOOGLE_CLIENT_ID = "29858523179-m3aqpk9n6er8mttn0isii75hd67pnnpj.apps.googleusercontent.com";
+
 window.CLUB_MEMBERS = [
   "19nNEDqPO21jzBy_rKGH0c83gTCZphz2g",
   "1XIG1weUzAOCKdaq79P-hYWX1fSLXlgRz",
