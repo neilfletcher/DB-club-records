@@ -291,6 +291,7 @@
     thead th { position: static; }
   }
 
+  tr.grp-more td:not([rowspan]) { border-bottom-color: transparent; padding-bottom: 3px; }
   .seg { max-width: 100%; flex-wrap: wrap; }
   .seg button { white-space: nowrap; }
   .badge.ev-milestone { color: var(--special); border-color: var(--special); }
@@ -1478,14 +1479,22 @@
     if (!rows.length) return html + '<p class="muted">No 252 attempts for this selection.</p></div>';
     html += '<div class="table-wide-scroll"><table><thead><tr><th>Archer</th><th>Bow</th>' +
       LADDER_DISTANCES.map(function (d) { return '<th class="num">' + d + "</th>"; }).join("") + "</tr></thead><tbody>";
+    // One group per archer (archers who shoot several bow types get one line
+    // per bow under a single name), in the order of their best line.
+    const groups = [], byMember = {};
     rows.forEach(function (r) {
-      html += "<tr><td>" + escapeHtml(r.m.name) + '</td><td class="nowrap">' + bowDot(r.bow) + r.bow + "</td>" + LADDER_DISTANCES.map(function (d) {
+      if (!byMember[r.m.id]) { byMember[r.m.id] = []; groups.push(byMember[r.m.id]); }
+      byMember[r.m.id].push(r);
+    });
+    groups.forEach(function (g) { g.forEach(function (r, i) {
+      html += (i < g.length - 1 ? '<tr class="grp-more">' : "<tr>") + (i === 0 ? '<td rowspan="' + g.length + '">' + escapeHtml(r.m.name) + "</td>" : "") +
+        '<td class="nowrap">' + bowDot(r.bow) + r.bow + "</td>" + LADDER_DISTANCES.map(function (d) {
         const c = r.cells[d];
         if (!c) return '<td class="num"><span class="status-pending">-</span></td>';
         if (c.date) return '<td class="num"><span class="status-good" title="Earned ' + fmtDate(c.date) + '">✓ ' + MONTH_NAMES[c.date.getMonth()] + " " + String(c.date.getFullYear()).slice(2) + "</span></td>";
         return '<td class="num"><span class="status-warn">' + c.best + "/" + c.t + '</span> <span class="muted small">' + c.q + "/" + LADDER_BADGE_COUNT + "</span></td>";
       }).join("") + "</tr>";
-    });
+    }); });
     html += "</tbody></table></div></div>";
     return html;
   }
