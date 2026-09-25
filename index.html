@@ -265,6 +265,24 @@
   details.claim-detail summary { cursor: pointer; font-size: 0.84rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
 
   @media print {
+    body[data-printing="certificate"] .wrap { display: none !important; }
+    body[data-printing="certificate"] #certificate { display: block !important; }
+    .cert { border: 6px double #333; padding: 18mm 14mm; text-align: center; font-family: Georgia, "Times New Roman", serif; color: #111; min-height: 240mm; box-sizing: border-box; }
+    .cert-club { font-size: 18pt; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 6mm; }
+    .cert h1 { font-size: 40pt; margin: 0 0 14mm; font-weight: normal; }
+    .cert-lead { font-size: 13pt; font-style: italic; margin: 4mm 0; }
+    .cert-name { font-size: 28pt; margin: 4mm 0 8mm; }
+    .cert-round { font-size: 22pt; margin: 4mm 0 2mm; }
+    .cert-cat { font-size: 13pt; margin: 0 0 8mm; }
+    .cert-score { font-size: 48pt; margin: 6mm 0; font-weight: bold; }
+    .cert-date { font-size: 13pt; }
+    .cert-sign { display: flex; justify-content: space-around; margin-top: 30mm; font-size: 11pt; }
+    .cert-sign span { border-top: 1px solid #333; padding-top: 2mm; width: 60mm; }
+    body[data-printing="awards"] header.page-head, body[data-printing="awards"] nav.tabs, body[data-printing="awards"] footer,
+    body[data-printing="awards"] .panel > :not(.awards-sheet) { display: none !important; }
+    body[data-printing="awards"] .print-only { display: block !important; }
+    .award { break-inside: avoid; }
+
     body { background: #fff; color: #000; }
     .head-controls, nav.tabs, footer, .no-print, #loadError, #connectScreen { display: none !important; }
     body[data-printing] .panel > :not(.print-target) { display: none !important; }
@@ -275,6 +293,18 @@
 
   .seg { max-width: 100%; flex-wrap: wrap; }
   .seg button { white-space: nowrap; }
+  .badge.ev-milestone { color: var(--special); border-color: var(--special); }
+  .rec-toggle { color: var(--text-primary); text-decoration: none; border-bottom: 1px dashed var(--baseline); text-align: left; }
+  .rec-row.open td { border-bottom: none; }
+  .hist-row td { background: var(--page-plane); }
+  .history ol { margin: 6px 0 0; padding-left: 20px; font-size: 0.84rem; }
+  .history li { padding: 2px 0; }
+  .history .num { font-weight: 600; font-variant-numeric: tabular-nums; margin-right: 6px; }
+  ul.vacant { columns: 2 260px; }
+  .award-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 18px; }
+  .award h3 { margin-top: 0 !important; color: var(--text-primary) !important; }
+  .award ol { margin: 0; padding-left: 20px; font-size: 0.86rem; line-height: 1.6; }
+  .print-only, #certificate { display: none; }
   button.linkish { background: none; border: none; padding: 0; font: inherit; color: var(--text-secondary); text-decoration: underline; cursor: pointer; }
   button.linkish:disabled { opacity: 0.5; cursor: default; }
   ul.plain { list-style: none; padding: 0; margin: 0; }
@@ -1051,12 +1081,15 @@
     tab: "records",
     now: new Date(),
     failed: 0,
-    rec: { loc: "outdoor", bow: "Recurve", gender: "all", age: "open", period: "all" },
+    rec: { loc: "outdoor", bow: "Recurve", gender: "all", age: "open", period: "all", open: null },
     recent: { days: 90 },
     honours: { season: null, bow: "all" },
     hcp: { bow: "all", sort: "hcp" },
     badges: { bow: "all" },
-    stats: { loc: "all", bow: "all", period: "all" }
+    stats: { loc: "all", bow: "all", period: "all" },
+    chal: { loc: "all", bow: "all" },
+    frost: { season: null, bow: "all" },
+    awards: { season: null }
   };
 
   function bowDot(bow) {
@@ -1117,11 +1150,21 @@
       if (isJuniorCategory(entries[entries.length - 1].category)) return;
       const adult = entries.filter(function (e) { return !isJuniorCategory(e.category); });
       if (!adult.length) return;
+      // A score above the round's maximum is a typo in the sheet: ignore it
+      // (it shows up in the admin data checks).
+      adult.forEach(function (e) {
+        const info = AGB.round(e.code);
+        if (info && e.score !== null && e.score > info.max) {
+          e.score = null; e.hcRound = null;
+          if (e.classDerived) { e.classRank = -1; e.classification = null; e.classDerived = false; }
+        }
+      });
       const m = { id: r.id, name: r.withheld ? WITHHELD : (r.name || "Unnamed archer"), withheld: !!r.withheld, entries: adult };
       adult.forEach(function (e) { e.member = m; e.gender2 = genderOf(e.category); });
       const byBow = {};
       adult.forEach(function (e) { (byBow[e.bucket] = byBow[e.bucket] || []).push(e); });
       Object.keys(byBow).forEach(function (b) { computeEvents(byBow[b], b); });
+      addMilestones(m);
       m.bows = DISCIPLINE_ORDER.filter(function (b) { return byBow[b]; });
       m.byBow = byBow;
       members.push(m);
@@ -1185,7 +1228,7 @@
     const f = state.rec;
     const rows = recordRows(f);
     let html = '<div class="card"><h2>Club records</h2><p class="card-note">Best score on each round by an adult member, from the record keeper\'s sheets. ' +
-      "Triple-face and single-face versions of a round are counted together. 252 practice rounds are on the 252 badges tab. " +
+      "Triple-face and single-face versions of a round are counted together. 252 practice rounds are on the 252 badges tab. Click a round to see its record history. " +
       '<span class="badge ev ev-record">NEW</span> marks a record set in the last ' + NEW_RECORD_DAYS + " days.</p>";
     html += '<div class="controls-row">' +
       segButtons("rec.loc", [["outdoor", "Outdoor"], ["indoor", "Indoor"]], f.loc) +
@@ -1200,15 +1243,19 @@
     }
     html += '<div class="table-wide-scroll"><table><thead><tr><th>Round</th><th class="num">Record</th><th>Held by</th><th>Date</th><th class="num">Hcp</th>' +
       '<th>Next best</th><th class="num">Shot</th></tr></thead><tbody>';
-    rows.forEach(function (r) {
+    state.recRows = rows;
+    rows.forEach(function (r, idx) {
       const e = r.top[0];
       const isNew = within(e, NEW_RECORD_DAYS);
-      html += "<tr><td>" + escapeHtml(r.label) + (e.code ? "" : ' <span class="muted small" title="Not in the Archery GB round list">(club)</span>') +
+      const open = f.open === r.key;
+      html += '<tr class="rec-row' + (open ? " open" : "") + '"><td><button type="button" class="linkish rec-toggle" data-hist="' + escapeHtml(r.key) + '" aria-expanded="' + open + '" title="Show record history">' + escapeHtml(r.label) + "</button>" + (e.code ? "" : ' <span class="muted small" title="Not in the Archery GB round list">(club)</span>') +
         '</td><td class="num"><strong>' + e.score + "</strong>" + (isNew ? ' <span class="badge ev ev-record">NEW</span>' : "") +
-        "</td><td>" + escapeHtml(e.member.name) + (f.gender === "all" ? ' <span class="muted small">' + (e.gender2 === "Women" ? "W" : "M") + (e.ageGroup === "50+" ? " 50+" : "") + "</span>" : "") +
+        "</td><td>" + nameCell(e.member) + (f.gender === "all" ? ' <span class="muted small">' + (e.gender2 === "Women" ? "W" : "M") + (e.ageGroup === "50+" ? " 50+" : "") + "</span>" : "") +
+        (e.member.withheld ? "" : ' <button type="button" class="linkish small no-print" data-cert="' + idx + '" title="Print a record certificate">Certificate</button>') +
         '</td><td class="nowrap">' + fmtDate(e.date) + '</td><td class="num">' + (e.hcRound !== null ? e.hcRound : "-") + "</td><td>" +
         r.top.slice(1).map(function (x) { return escapeHtml(x.member.name) + " " + x.score; }).join('<span class="muted"> · </span>') +
         '</td><td class="num">' + r.shots + ' <span class="muted small">/ ' + r.archers + (r.archers === 1 ? " archer" : " archers") + "</span></td></tr>";
+      if (open) html += '<tr class="hist-row"><td colspan="7">' + historyHtml(r.key, f) + "</td></tr>";
     });
     html += "</tbody></table></div></div>";
     return html;
@@ -1217,8 +1264,8 @@
   // =====================================================================
   // Recent
   // =====================================================================
-  const EV_LABEL = { pb: "PB", "class": "CLASS", badge: "252", hcp: "HCP", podium: "PODIUM", record: "RECORD" };
-  const EV_ORDER = { record: 0, podium: 1, "class": 2, badge: 3, pb: 4, hcp: 5 };
+  const EV_LABEL = { pb: "PB", "class": "CLASS", badge: "252", hcp: "HCP", podium: "PODIUM", record: "RECORD", milestone: "MILESTONE" };
+  const EV_ORDER = { record: 0, podium: 1, "class": 2, badge: 3, milestone: 4, pb: 5, hcp: 6 };
 
   function buildRecent() {
     const days = state.recent.days;
@@ -1525,6 +1572,8 @@
       perMember(list.filter(function (e) { return e.placing && e.placing <= 3; })), "", null);
     html += "</div>";
 
+    html += bestPerformancesCard(f);
+
     // Records by bow type.
     const bows = DISCIPLINE_ORDER.filter(function (b) { return (f.bow === "all" || f.bow === b) && records.some(function (e) { return e.bucket === b; }); });
     if (bows.length) {
@@ -1716,6 +1765,9 @@
         throw new Error((res && res.error) || "The request failed.");
       }
       a.data = res;
+      // In service mode the admin copy includes every name, for the lists and
+      // checks; it stays in memory and names are removed before caching.
+      if (Array.isArray(res.archers)) state.memRaw = res.archers.map(function (x) { return { id: x.k, name: x.name, rows: x.rows }; });
       a.email = res.email || a.email;
       if (res.status) setPrivacy(res.status);
       return refreshShown().then(function () { setStatus(statusText("settings saved")); });
@@ -1812,6 +1864,8 @@
             escapeHtml(p.name) + '" data-v="default"' + (a.busy ? " disabled" : "") + ">Remove</button></li>";
         }).join("") + "</ul></div>";
     }
+    html += sheetsCard(a);
+    html += checksCard(state.memRaw);
     return html;
   }
 
@@ -1838,6 +1892,8 @@
     else if (act === "set") adminCall({ action: "setStatus", name: b.dataset.name, status: b.dataset.v });
     else if (act === "approve") adminCall({ action: "setStatus", name: b.dataset.name, status: b.dataset.kind });
     else if (act === "dismiss") adminCall({ action: "dismiss", name: b.dataset.name });
+    else if (act === "rebuild") adminCall({ action: "rebuild" });
+    else if (act === "removeSheet") { if (window.confirm("Stop reading this sheet? (It isn't deleted from the Drive.)")) adminCall({ action: "removeSheet", id: b.dataset.id }); }
   });
 
   document.getElementById("panels").addEventListener("input", function (ev) {
@@ -1850,15 +1906,457 @@
   });
 
   // =====================================================================
+  // Shared helpers for challenges, history, awards
+  // =====================================================================
+  // Handicap worked out from the score with the 2023 tables, so old and new
+  // scores compare fairly (the sheets hold older-scheme handicaps for
+  // pre-2023 scores).
+  function hcOf(e) {
+    if (e._hc === undefined) e._hc = e.code && e.score !== null ? AGB.handicapFor(e.code, e.score) : null;
+    return e._hc;
+  }
+
+  function categoryLabel(e) {
+    return e.bucket + " · " + e.gender2.toLowerCase() + " · " + e.loc;
+  }
+
+  function recordKey(e) { return roundKey(e) + "|" + e.bucket + "|" + e.gender2 + "|" + e.loc; }
+
+  function nameCell(m) {
+    return m.withheld ? '<span class="muted">' + WITHHELD + "</span>" : escapeHtml(m.name);
+  }
+
+  // Latest running handicap per visible archer and bow type, within 12 months.
+  function currentHandicaps() {
+    const out = {};
+    state.members.forEach(function (m) {
+      Object.keys(m.byBow).forEach(function (b) {
+        const w = m.byBow[b].filter(function (e) { return e.hcRunning !== null && within(e, 365); });
+        if (w.length) out[m.id + "|" + b] = w[w.length - 1].hcRunning;
+      });
+    });
+    return out;
+  }
+
+  // =====================================================================
+  // Challenges: records at risk, softest and vacant records
+  // =====================================================================
+  function buildChallenges() {
+    const f = state.chal;
+    const records = currentRecords().filter(function (e) {
+      return e.code && (f.bow === "all" || e.bucket === f.bow) && (f.loc === "all" || e.loc === f.loc);
+    });
+    const hcs = currentHandicaps();
+    const risk = [];
+    records.forEach(function (rec) {
+      const key = recordKey(rec);
+      const table = AGB.round(rec.code).table;
+      const recHc = hcOf(rec);
+      let best = null;
+      state.members.forEach(function (m) {
+        if (m.id === rec.member.id || !m.byBow[rec.bucket]) return;
+        const mine = m.byBow[rec.bucket].filter(function (e) { return e.gender2 === rec.gender2; });
+        if (!mine.length) return;
+        const recent = mine.filter(function (e) { return within(e, 365) && e.score !== null && recordKey(e) === key; });
+        const bestRecent = maxBy(recent, function (e) { return e.score; });
+        const hc = hcs[m.id + "|" + rec.bucket];
+        const predicted = hc !== undefined && hc !== null ? table[Math.max(0, Math.min(table.length - 1, Math.floor(hc)))] : null;
+        if (!bestRecent && predicted === null) return;
+        const recentHc = bestRecent ? hcOf(bestRecent) : null;
+        const challengeHc = [recentHc, hc].filter(function (x) { return x !== null && x !== undefined; });
+        const c = { m: m, recent: bestRecent, predicted: predicted, hc: Math.min.apply(null, challengeHc) };
+        if (!best || c.hc < best.hc) best = c;
+      });
+      if (best && recHc !== null) risk.push({ rec: rec, c: best, gap: best.hc - recHc });
+    });
+    risk.sort(function (a, b) { return a.gap - b.gap || b.rec.score - a.rec.score; });
+
+    let html = '<div class="card"><h2>Challenges</h2><p class="card-note">Which club records could fall next, which are there for the taking, and which categories have no record yet. ' +
+      "Uses archers active in the last 12 months. Predicted scores come from each archer's current handicap and the Archery GB 2023 tables.</p>" +
+      '<div class="controls-row">' + segButtons("chal.loc", [["all", "Indoor and outdoor"], ["outdoor", "Outdoor"], ["indoor", "Indoor"]], f.loc) +
+      segButtons("chal.bow", bowOptions(true), f.bow) + "</div></div>";
+
+    html += '<div class="card"><h2>Records most at risk</h2><p class="card-note">Ranked by how close the nearest challenger is, in handicap terms, so different rounds compare fairly. ' +
+      '<span class="badge ev ev-record">WITHIN REACH</span> means their current handicap already predicts a score above the record.</p>';
+    if (!risk.length) html += '<p class="muted small">No active challengers for this selection.</p>';
+    else {
+      html += '<div class="table-wide-scroll"><table><thead><tr><th>Round</th><th>Category</th><th class="num">Record</th><th>Held by</th><th>Nearest challenger</th><th class="num">Best recent</th><th class="num">Predicted</th><th class="num">Hcp gap</th></tr></thead><tbody>';
+      risk.slice(0, 15).forEach(function (r) {
+        const reach = r.c.predicted !== null && r.c.predicted > r.rec.score;
+        html += "<tr><td>" + escapeHtml(roundLabel(roundKey(r.rec), r.rec)) + '</td><td class="nowrap">' + bowDot(r.rec.bucket) + escapeHtml(categoryLabel(r.rec)) +
+          '</td><td class="num"><strong>' + r.rec.score + "</strong></td><td>" + nameCell(r.rec.member) + "</td><td>" + escapeHtml(r.c.m.name) +
+          (reach ? ' <span class="badge ev ev-record">WITHIN REACH</span>' : "") + '</td><td class="num">' +
+          (r.c.recent ? r.c.recent.score + ' <span class="muted small">(' + (r.rec.score - r.c.recent.score > 0 ? "-" + (r.rec.score - r.c.recent.score) : "+" + (r.c.recent.score - r.rec.score)) + ")</span>" : "-") +
+          '</td><td class="num">' + (r.c.predicted !== null ? r.c.predicted : "-") + '</td><td class="num">' + (r.gap <= 0 ? '<span class="status-good">' + r.gap + "</span>" : r.gap) + "</td></tr>";
+      });
+      html += "</tbody></table></div>";
+    }
+    html += "</div>";
+
+    // Softest: records representing the weakest handicap, on rounds people shoot.
+    const soft = records.filter(function (e) { return hcOf(e) !== null; }).sort(function (a, b) { return hcOf(b) - hcOf(a); }).slice(0, 12);
+    html += '<div class="card"><h2>Softest records</h2><p class="card-note">Records set at the highest (weakest) handicap: the easiest ones to beat.</p>';
+    if (!soft.length) html += '<p class="muted small">No records for this selection.</p>';
+    else {
+      html += '<div class="table-wide-scroll"><table><thead><tr><th>Round</th><th>Category</th><th class="num">Record</th><th class="num">Hcp</th><th>Held by</th><th>Since</th></tr></thead><tbody>';
+      soft.forEach(function (e) {
+        html += "<tr><td>" + escapeHtml(roundLabel(roundKey(e), e)) + '</td><td class="nowrap">' + bowDot(e.bucket) + escapeHtml(categoryLabel(e)) + '</td><td class="num">' + e.score +
+          '</td><td class="num">' + hcOf(e) + "</td><td>" + nameCell(e.member) + '</td><td class="nowrap">' + fmtDate(e.date) + "</td></tr>";
+      });
+      html += "</tbody></table></div>";
+    }
+    html += "</div>";
+
+    // Vacant: popular rounds with no record yet in a category that has active archers.
+    const popular = {};
+    state.entries.forEach(function (e) {
+      if (!e.code || e.isLadder || e.score === null || !within(e, 3 * 365)) return;
+      const k = roundKey(e) + "|" + e.loc;
+      popular[k] = popular[k] || { key: roundKey(e), loc: e.loc, n: 0, sample: e };
+      popular[k].n++;
+    });
+    const held = {};
+    currentRecords().forEach(function (e) { held[recordKey(e)] = true; });
+    const activeCats = {};
+    state.visible.forEach(function (e) { if (within(e, 365) && DISCIPLINE_COLOR[e.bucket]) activeCats[e.bucket + "|" + e.gender2] = true; });
+    const vacant = [];
+    Object.keys(popular).map(function (k) { return popular[k]; }).filter(function (p) { return p.n >= 5 && (f.loc === "all" || p.loc === f.loc); }).forEach(function (p) {
+      Object.keys(activeCats).forEach(function (c) {
+        const bow = c.split("|")[0], gender = c.split("|")[1];
+        if (f.bow !== "all" && bow !== f.bow) return;
+        if (!held[p.key + "|" + bow + "|" + gender + "|" + p.loc]) vacant.push({ p: p, bow: bow, gender: gender });
+      });
+    });
+    vacant.sort(function (a, b) { return b.p.n - a.p.n || a.bow.localeCompare(b.bow); });
+    html += '<div class="card"><h2>Vacant records</h2><p class="card-note">Rounds the club shoots regularly where a category with active archers has no record yet. The first score sets it.</p>';
+    if (!vacant.length) html += '<p class="muted small">Every popular round has a record in every active category.</p>';
+    else {
+      html += '<ul class="plain vacant">' + vacant.slice(0, 30).map(function (v) {
+        return "<li><strong>" + escapeHtml(roundLabel(v.p.key, v.p.sample)) + '</strong> <span class="muted small">(' + v.p.loc + ")</span> · " + bowDot(v.bow) + v.bow + " " + v.gender.toLowerCase() + "</li>";
+      }).join("") + "</ul>";
+    }
+    html += "</div>";
+    return html;
+  }
+
+  // =====================================================================
+  // Record history (opened from the Club records table)
+  // =====================================================================
+  function recordHistory(key, f) {
+    const list = state.entries.filter(function (e) {
+      if (!e.round || e.score === null || e.isLadder || e.bucket !== f.bow || e.loc !== f.loc || roundKey(e) !== key) return false;
+      if (f.gender !== "all" && e.gender2 !== f.gender) return false;
+      if (f.age === "50" && e.ageGroup !== "50+") return false;
+      return true;
+    }).sort(function (a, b) { return a.date - b.date; });
+    const steps = [];
+    let best = -1;
+    list.forEach(function (e) { if (e.score > best) { best = e.score; steps.push(e); } });
+    return steps.reverse();
+  }
+
+  function historyHtml(key, f) {
+    const steps = recordHistory(key, f);
+    return '<div class="history"><strong>Record history</strong><ol>' + steps.map(function (e, i) {
+      const next = steps[i - 1];
+      const stood = Math.round(((next ? next.date : state.now) - e.date) / 864e5);
+      return "<li><span class=\"num\">" + e.score + "</span> " + nameCell(e.member) + ' <span class="muted small">' + fmtDate(e.date) +
+        " · stood " + (stood >= 365 ? (Math.round(stood / 36.5) / 10) + " years" : stood + " days") + (next ? "" : " so far") + "</span></li>";
+    }).join("") + "</ol></div>";
+  }
+
+  // =====================================================================
+  // Certificates
+  // =====================================================================
+  function printCertificate(e) {
+    const holder = document.getElementById("certificate") || document.body.appendChild(Object.assign(document.createElement("div"), { id: "certificate" }));
+    holder.innerHTML = '<div class="cert"><div class="cert-inner">' +
+      '<p class="cert-club">' + escapeHtml(CLUB_NAME) + "</p><h1>Club Record</h1>" +
+      '<p class="cert-lead">This certifies that</p><p class="cert-name">' + escapeHtml(e.member.name) + "</p>" +
+      '<p class="cert-lead">set the club record for</p><p class="cert-round">' + escapeHtml(roundLabel(roundKey(e), e)) + "</p>" +
+      '<p class="cert-cat">' + escapeHtml(e.bucket + ", " + (e.gender2 === "Women" ? "women" : "men") + ", " + e.loc) + "</p>" +
+      '<p class="cert-score">' + e.score + "</p>" +
+      '<p class="cert-date">' + fmtDate(e.date) + (hcOf(e) !== null ? " · handicap " + hcOf(e) : "") + "</p>" +
+      '<div class="cert-sign"><span>Records officer</span><span>Date</span></div></div></div>';
+    document.body.setAttribute("data-printing", "certificate");
+    const done = function () { document.body.removeAttribute("data-printing"); window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    window.print();
+  }
+
+  // =====================================================================
+  // Best performances (Stats tab)
+  // =====================================================================
+  function bestPerformancesCard(f) {
+    const list = state.visible.filter(function (e) { return statPasses(e, f) && !e.isLadder && hcOf(e) !== null && DISCIPLINE_COLOR[e.bucket]; })
+      .sort(function (a, b) { return hcOf(a) - hcOf(b) || a.date - b.date; }).slice(0, 20);
+    let html = '<div class="card"><h2>Best performances</h2><p class="card-note">The strongest scores on any round, ranked by the handicap they represent (Archery GB 2023 tables), so a great York and a great Portsmouth compare fairly.</p>';
+    if (!list.length) return html + '<p class="muted small">No scores for this selection.</p></div>';
+    html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">#</th><th class="num">Hcp</th><th>Archer</th><th>Round</th><th class="num">Score</th><th>Bow</th><th>Date</th></tr></thead><tbody>';
+    list.forEach(function (e, i) {
+      html += '<tr><td class="num muted">' + (i + 1) + '</td><td class="num"><strong>' + hcOf(e) + "</strong></td><td>" + escapeHtml(e.member.name) + "</td><td>" + escapeHtml(e.round) +
+        '</td><td class="num">' + e.score + '</td><td class="nowrap">' + bowDot(e.bucket) + e.bucket + '</td><td class="nowrap">' + fmtDate(e.date) + "</td></tr>";
+    });
+    return html + "</tbody></table></div></div>";
+  }
+
+  // =====================================================================
+  // Frostbite league (handicap-adjusted, winter season July to June)
+  // =====================================================================
+  function frostbiteSeasons() {
+    const ys = {};
+    state.visible.forEach(function (e) { if (e.code === "frostbite") ys[indoorSeasonOf(e.date)] = true; });
+    return Object.keys(ys).map(Number).sort(function (a, b) { return b - a; });
+  }
+
+  function frostbiteTable(year, bow) {
+    const by = {};
+    state.visible.forEach(function (e) {
+      if (e.code !== "frostbite" || e.score === null || indoorSeasonOf(e.date) !== year) return;
+      if (bow !== "all" && e.bucket !== bow) return;
+      const k = e.member.id;
+      if (!by[k]) by[k] = { m: e.member, list: [] };
+      by[k].list.push(e);
+    });
+    return Object.keys(by).map(function (k) {
+      const r = by[k];
+      const adj = r.list.filter(function (e) { return e.hcAdjusted !== null; }).map(function (e) { return e.hcAdjusted; }).sort(function (a, b) { return b - a; });
+      const top3 = adj.slice(0, 3);
+      return {
+        m: r.m, shoots: r.list.length, bows: Array.from(new Set(r.list.map(function (e) { return e.bucket; }))),
+        bestRaw: Math.max.apply(null, r.list.map(function (e) { return e.score; })),
+        bestAdj: adj.length ? adj[0] : null,
+        avg3: top3.length ? Math.round(top3.reduce(function (s, v) { return s + v; }, 0) / top3.length) : null, counted: top3.length
+      };
+    }).sort(function (a, b) { return (b.avg3 || 0) - (a.avg3 || 0) || b.shoots - a.shoots; });
+  }
+
+  function buildFrostbite() {
+    const seasons = frostbiteSeasons();
+    let html = '<div class="card"><h2>Frostbite league</h2><p class="card-note">Handicap-adjusted Frostbite scores from the sheets (score plus handicap allowance), so every bow type and ability competes fairly. ' +
+      "Ranked by the average of each archer's best three adjusted scores in the season (July to June). Scores without an adjusted score in the sheet are counted in shoots but not ranked.</p>";
+    if (!seasons.length) return html + '<p class="muted">No Frostbite scores yet.</p></div>';
+    if (seasons.indexOf(state.frost.season) === -1) state.frost.season = seasons[0];
+    html += '<div class="controls-row"><label class="ctl">Season <select data-frost-season>' + seasons.map(function (y) {
+      return '<option value="' + y + '"' + (y === state.frost.season ? " selected" : "") + ">" + indoorLabel(y) + "</option>";
+    }).join("") + "</select></label>" + segButtons("frost.bow", bowOptions(true), state.frost.bow) + "</div>";
+    const rows = frostbiteTable(state.frost.season, state.frost.bow);
+    if (!rows.length) return html + '<p class="muted">No Frostbite scores for this selection.</p></div>';
+    html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">#</th><th>Archer</th><th>Bow</th><th class="num">Best 3 avg (adj.)</th><th class="num">Best adjusted</th><th class="num">Best score</th><th class="num">Shoots</th></tr></thead><tbody>';
+    let rank = 0;
+    rows.forEach(function (r) {
+      const ranked = r.avg3 !== null;
+      if (ranked) rank++;
+      html += '<tr><td class="num muted">' + (ranked ? rank : "-") + "</td><td>" + escapeHtml(r.m.name) + '</td><td class="nowrap">' + r.bows.map(function (b) { return bowDot(b) + b; }).join(", ") +
+        '</td><td class="num"><strong>' + (ranked ? r.avg3 : "-") + "</strong>" + (ranked && r.counted < 3 ? ' <span class="muted small">(' + r.counted + ")</span>" : "") +
+        '</td><td class="num">' + (r.bestAdj !== null ? r.bestAdj : "-") + '</td><td class="num">' + r.bestRaw + '</td><td class="num">' + r.shoots + "</td></tr>";
+    });
+    return html + "</tbody></table></div></div>";
+  }
+
+  // =====================================================================
+  // Milestones (added to each archer's events)
+  // =====================================================================
+  function addMilestones(m) {
+    const list = m.entries.slice().sort(function (a, b) { return a.date - b.date; });
+    let arrows = 0, shoots = 0, firstClass = false;
+    const bows = {};
+    const shootMarks = [50, 100, 250, 500, 1000], arrowMarks = [1000, 5000, 10000, 25000, 50000];
+    list.forEach(function (e) {
+      shoots++;
+      if (shootMarks.indexOf(shoots) !== -1) e.events.push({ type: "milestone", text: shoots + "th score logged" });
+      const before = arrows;
+      arrows += e.arrows || 0;
+      arrowMarks.forEach(function (a) { if (before < a && arrows >= a) e.events.push({ type: "milestone", text: a.toLocaleString("en-GB") + " arrows shot" }); });
+      if (DISCIPLINE_COLOR[e.bucket] && !bows[e.bucket]) {
+        if (Object.keys(bows).length) e.events.push({ type: "milestone", text: "First score with a " + e.bucket.toLowerCase() });
+        bows[e.bucket] = true;
+      }
+      if (!firstClass && e.classRank >= 0 && e.date.getFullYear() >= FIRST_OUTDOOR_SEASON) {
+        firstClass = true;
+        e.events.push({ type: "milestone", text: "First classification score: " + e.classification });
+      }
+    });
+  }
+
+  // =====================================================================
+  // Awards (printable season summary)
+  // =====================================================================
+  function awardSeasons() {
+    const ys = new Set(state.visible.map(function (e) { return e.date.getFullYear(); }));
+    const out = [];
+    Array.from(ys).sort(function (a, b) { return b - a; }).forEach(function (y) { out.push("y-" + y); });
+    const ins = new Set(state.visible.map(function (e) { return indoorSeasonOf(e.date); }));
+    Array.from(ins).sort(function (a, b) { return b - a; }).forEach(function (y) { out.push("w-" + y); });
+    return out;
+  }
+  function awardLabel(k) { return k[0] === "y" ? "Year " + k.slice(2) : "Season " + indoorLabel(Number(k.slice(2))) + " (July to June)"; }
+  function inAward(e, k) { return k[0] === "y" ? e.date.getFullYear() === Number(k.slice(2)) : indoorSeasonOf(e.date) === Number(k.slice(2)); }
+
+  function top(list, fn, n) {
+    const by = {};
+    list.forEach(function (e) { const k = e.member.id; by[k] = by[k] || { m: e.member, v: 0 }; by[k].v += fn(e); });
+    return Object.keys(by).map(function (k) { return by[k]; }).filter(function (r) { return r.v > 0; }).sort(function (a, b) { return b.v - a.v; }).slice(0, n || 3);
+  }
+
+  function awardCard(title, winners, unit) {
+    let html = '<div class="card award"><h3>' + title + "</h3>";
+    if (!winners.length) return html + '<p class="muted small">No one this season.</p></div>';
+    const u = function (v) { if (!unit) return ""; const parts = unit.split("|"); return " " + (v === 1 ? parts[0] : parts[1] || parts[0]); };
+    html += "<ol>" + winners.map(function (w) { return "<li><strong>" + escapeHtml(w.m.name) + "</strong> " + (w.text || w.v.toLocaleString("en-GB") + u(w.v)) + "</li>"; }).join("") + "</ol>";
+    return html + "</div>";
+  }
+
+  function buildAwards() {
+    const seasons = awardSeasons();
+    if (!seasons.length) return '<div class="card"><p class="muted">No scores yet.</p></div>';
+    if (seasons.indexOf(state.awards.season) === -1) state.awards.season = seasons[0];
+    const k = state.awards.season;
+    const list = state.visible.filter(function (e) { return inAward(e, k) && DISCIPLINE_COLOR[e.bucket]; });
+    const has = function (e, t) { return e.events.some(function (ev) { return ev.type === t; }); };
+
+    // Most improved: biggest drop in running handicap within the season, per bow.
+    const improved = [];
+    state.members.forEach(function (m) {
+      Object.keys(m.byBow).forEach(function (b) {
+        const w = m.byBow[b].filter(function (e) { return inAward(e, k) && e.hcRunning !== null; });
+        if (w.length < 2) return;
+        const drop = w[0].hcRunning - w[w.length - 1].hcRunning;
+        if (drop > 0) improved.push({ m: m, v: drop, text: "down " + drop + " (" + b.toLowerCase() + ", " + w[0].hcRunning + " to " + w[w.length - 1].hcRunning + ")" });
+      });
+    });
+    improved.sort(function (a, b) { return b.v - a.v; });
+
+    const bestPerf = list.filter(function (e) { return !e.isLadder && hcOf(e) !== null; }).sort(function (a, b) { return hcOf(a) - hcOf(b); }).slice(0, 3)
+      .map(function (e) { return { m: e.member, text: e.round + " " + e.score + " (" + e.bucket.toLowerCase() + ", handicap " + hcOf(e) + ")" }; });
+
+    const classWinners = [];
+    DISCIPLINE_ORDER.forEach(function (b) {
+      let best = null;
+      list.filter(function (e) { return e.bucket === b && e.classRank >= 0; }).forEach(function (e) {
+        const score = e.classRank + (e.loc === "outdoor" ? 0.5 : 0);
+        if (!best || score > best.s) best = { s: score, e: e };
+      });
+      if (best) classWinners.push({ m: best.e.member, text: best.e.classification + " (" + b.toLowerCase() + ")" });
+    });
+
+    let html = '<div class="card no-print-controls"><h2>Awards</h2><p class="card-note">A season summary for presentations and the AGM, from adult members\' scores. Print it for a one-page handout.</p>' +
+      '<div class="controls-row"><label class="ctl">Period <select data-awards-season>' + seasons.map(function (s) {
+        return '<option value="' + s + '"' + (s === k ? " selected" : "") + ">" + escapeHtml(awardLabel(s)) + "</option>";
+      }).join("") + '</select></label><button type="button" class="btn no-print" data-print-awards>Print awards</button></div></div>';
+    html += '<div class="awards-sheet" id="awardsSheet"><h2 class="print-only">' + escapeHtml(CLUB_NAME) + " awards: " + escapeHtml(awardLabel(k)) + "</h2>";
+    html += '<div class="tile-row">' + tile("Scores", list.length, "logged") + tile("Archers", new Set(list.map(function (e) { return e.member.id; })).size, "shot") +
+      tile("Club records broken", list.filter(function (e) { return has(e, "record"); }).length, "") + tile("Personal bests", list.filter(function (e) { return has(e, "pb"); }).length, "") + "</div>";
+    html += '<div class="award-grid">' +
+      awardCard("Best performance", bestPerf) +
+      awardCard("Most improved", improved.slice(0, 3)) +
+      awardCard("Most club records broken", top(list, function (e) { return has(e, "record") ? 1 : 0; }), "") +
+      awardCard("Most personal bests", top(list, function (e) { return e.events.filter(function (ev) { return ev.type === "pb"; }).length; }), "PB|PBs") +
+      awardCard("Most dedicated", top(list, function () { return 1; }), "score|scores") +
+      awardCard("Most arrows", top(list, function (e) { return e.arrows || 0; }), "arrow|arrows") +
+      awardCard("Podium finishes", top(list, function (e) { return e.placing && e.placing <= 3 ? 1 : 0; }), "") +
+      awardCard("252 badges", top(list, function (e) { return e.events.filter(function (ev) { return ev.type === "badge"; }).length; }), "badge|badges") +
+      awardCard("Top classification by bow type", classWinners);
+    if (k[0] === "w") {
+      const fb = frostbiteTable(Number(k.slice(2)), "all").filter(function (r) { return r.avg3 !== null; }).slice(0, 3)
+        .map(function (r) { return { m: r.m, text: "best-3 adjusted average " + r.avg3 }; });
+      html += awardCard("Frostbite league", fb);
+    }
+    html += "</div></div>";
+    return html;
+  }
+
+  // =====================================================================
+  // Data checks (admin only; uses the admin copy with every name)
+  // =====================================================================
+  const KNOWN_CATEGORY = /(gentlemen|ladies|male|female|men|women|open)\b/i;
+
+  function dataChecks(raw) {
+    const issues = [];
+    const add = function (name, date, what, detail) { issues.push({ name: name || "(unnamed sheet)", date: date, what: what, detail: detail }); };
+    raw.forEach(function (r) {
+      if (!r.rows) return;
+      const seen = {};
+      r.rows.forEach(function (row) {
+        const date = parseDate(row[0]);
+        if (!date) return;
+        const bow = String(row[2] || "").trim(), round = String(row[3] || "").trim(), score = num(row[4]);
+        const code = AGB.roundCode(round, bow);
+        const info = AGB.round(code);
+        if (date > new Date(state.now.getTime() + 864e5)) add(r.name, date, "Date in the future", "");
+        if (round && !code && !LADDER_RE.test(round)) add(r.name, date, "Round not recognised", round);
+        if (round && score === null) add(r.name, date, "No score", round);
+        if (info && score !== null && score > info.max) add(r.name, date, "Score above the round's maximum", round + " " + score + " (max " + info.max + ")");
+        if (round && !bow) add(r.name, date, "No bow type", round);
+        if (bow && DISCIPLINE_ORDER.indexOf(bow) === -1) add(r.name, date, "Unexpected bow type", bow);
+        if (row[1] && !KNOWN_CATEGORY.test(row[1])) add(r.name, date, "Category not recognised", row[1]);
+        const sheetHc = num(row[6]);
+        if (info && score !== null && sheetHc !== null && date.getFullYear() >= 2023 && !LADDER_RE.test(round)) {
+          const calc = AGB.handicapFor(code, score);
+          if (calc !== null && Math.abs(calc - sheetHc) > 2) add(r.name, date, "Handicap differs from the 2023 tables", round + " " + score + ": sheet " + sheetHc + ", tables " + calc);
+        }
+        const cls = cleanText(row[5]);
+        if (cls && date.getFullYear() >= 2023 && !parseClassification(cls)) add(r.name, date, "Classification not recognised", cls);
+        const k = [row[0], bow, round, score].join("|");
+        if (seen[k]) add(r.name, date, "Possible duplicate", round + " " + score);
+        seen[k] = true;
+      });
+    });
+    return issues.sort(function (a, b) { return b.date - a.date; });
+  }
+
+  function checksCard(raw) {
+    const issues = dataChecks(raw);
+    const byType = countBy(issues, function (i) { return i.what; });
+    let html = '<div class="card"><h2>Data checks</h2><p class="card-note">Possible problems in the score sheets, for the record keeper to look at. The site never changes the sheets.</p>';
+    if (!issues.length) return html + '<p class="status-good">No problems found.</p></div>';
+    html += "<p>" + Object.keys(byType).map(function (t) { return '<span class="pill">' + escapeHtml(t) + " · " + byType[t] + "</span>"; }).join(" ") + "</p>";
+    html += '<div class="table-scroll"><table><thead><tr><th>Archer</th><th>Date</th><th>Issue</th><th>Detail</th></tr></thead><tbody>';
+    issues.slice(0, 300).forEach(function (i) {
+      html += "<tr><td>" + escapeHtml(i.name) + '</td><td class="nowrap">' + fmtDate(i.date) + "</td><td>" + escapeHtml(i.what) + "</td><td>" + escapeHtml(i.detail) + "</td></tr>";
+    });
+    html += "</tbody></table></div>" + (issues.length > 300 ? '<p class="muted small">Showing the latest 300 of ' + issues.length + ".</p>" : "") + "</div>";
+    return html;
+  }
+
+  // =====================================================================
+  // Member sheets (admin, when the privacy service holds the list)
+  // =====================================================================
+  function sheetsCard(a) {
+    const sheets = (a.data && a.data.sheets) || null;
+    if (!sheets) return "";
+    const counts = countBy(sheets, function (s) { return s.state; });
+    let html = '<div class="card"><h2>Member sheets</h2><p class="card-note">The sheets the site reads (read only) from the record keeper\'s folder. ' +
+      "Junior sheets are skipped completely and their names are never stored. " +
+      (a.data.built ? "Last read " + fmtDate(new Date(a.data.built)) + " " + new Date(a.data.built).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) + "; " : "") +
+      "the site re-reads them every hour.</p>" +
+      '<p class="small">' + ["ok", "junior", "empty", "error"].filter(function (k) { return counts[k]; }).map(function (k) {
+        return '<span class="pill">' + { ok: "Shown", junior: "Junior (skipped)", empty: "No adult scores", error: "Couldn't read" }[k] + " · " + counts[k] + "</span>";
+      }).join(" ") + "</p>" +
+      '<form class="controls-row" id="addSheetForm"><label class="ctl">Add a sheet <input type="text" id="addSheetInput" placeholder="Paste the sheet link" autocomplete="off" style="min-width:260px"></label>' +
+      '<button class="btn" type="submit"' + (a.busy ? " disabled" : "") + '>Add</button><button class="btn" type="button" data-admin="rebuild"' + (a.busy ? " disabled" : "") + ">Re-read all sheets now</button></form>";
+    html += '<div class="table-scroll"><table><thead><tr><th>Sheet</th><th>State</th><th class="num">Scores</th><th></th></tr></thead><tbody>';
+    sheets.slice().sort(function (x, y) { return String(x.name || "~").localeCompare(String(y.name || "~")); }).forEach(function (s) {
+      html += "<tr><td>" + (s.name ? escapeHtml(s.name) : '<span class="muted">' + (s.state === "junior" ? "Junior sheet" : "Unnamed") + "</span>") + ' <span class="muted small">' + escapeHtml(s.id.slice(0, 8)) + "…</span></td><td>" +
+        { ok: '<span class="status-good">Shown</span>', junior: "Junior (skipped)", empty: '<span class="muted">No adult scores</span>', error: '<span class="status-warn">Couldn\'t read</span>' }[s.state] +
+        '</td><td class="num">' + (s.rows || 0) + '</td><td><button type="button" class="linkish" data-admin="removeSheet" data-id="' + escapeHtml(s.id) + '"' + (a.busy ? " disabled" : "") + ">Remove</button></td></tr>";
+    });
+    return html + "</tbody></table></div></div>";
+  }
+
+  // =====================================================================
   // Rendering, tabs, events
   // =====================================================================
   const TABS = [
     { id: "records", label: "Club records", build: buildRecords },
+    { id: "challenges", label: "Challenges", build: buildChallenges },
     { id: "stats", label: "Stats", build: buildStats, draw: drawStats },
     { id: "recent", label: "Recent", build: buildRecent, draw: drawRecent },
     { id: "classifications", label: "Classifications", build: buildHonours },
     { id: "handicaps", label: "Handicaps", build: buildHandicaps },
+    { id: "frostbite", label: "Frostbite", build: buildFrostbite },
     { id: "badges", label: "252 badges", build: buildBadges },
+    { id: "awards", label: "Awards", build: buildAwards },
     { id: "privacy", label: "Privacy", build: buildPrivacy, hidden: true },
     { id: "admin", label: "Site admin", build: buildAdmin, draw: drawAdmin, hidden: true }
   ];
@@ -1921,8 +2419,29 @@
   });
   panels.addEventListener("submit", function (ev) {
     if (ev.target.id === "requestForm") { ev.preventDefault(); submitRequest(ev.target); }
+    if (ev.target.id === "addSheetForm" && state.admin) {
+      ev.preventDefault();
+      const v = document.getElementById("addSheetInput").value.trim();
+      const m = /\/d\/([\w-]{20,})/.exec(v) || /^([\w-]{20,})$/.exec(v);
+      if (!m) { state.admin.msg = "That doesn't look like a Google Sheets link."; render(); return; }
+      adminCall({ action: "addSheet", id: m[1] });
+    }
+  });
+  panels.addEventListener("click", function (ev) {
+    const h = ev.target.closest("[data-hist]");
+    if (h) { state.rec.open = state.rec.open === h.dataset.hist ? null : h.dataset.hist; render(); const again = document.querySelector('[data-hist="' + h.dataset.hist + '"]'); if (again) again.focus(); return; }
+    const c = ev.target.closest("[data-cert]");
+    if (c && state.recRows) { const r = state.recRows[Number(c.dataset.cert)]; if (r) printCertificate(r.top[0]); return; }
+    if (ev.target.closest("[data-print-awards]")) {
+      document.body.setAttribute("data-printing", "awards");
+      const done = function () { document.body.removeAttribute("data-printing"); window.removeEventListener("afterprint", done); };
+      window.addEventListener("afterprint", done);
+      window.print();
+    }
   });
   panels.addEventListener("change", function (ev) {
+    if (ev.target.matches("select[data-frost-season]")) { state.frost.season = Number(ev.target.value); render(); return; }
+    if (ev.target.matches("select[data-awards-season]")) { state.awards.season = ev.target.value; render(); return; }
     if (ev.target.matches("select[data-honours-season]")) { state.honours.season = ev.target.value; render(); const s = document.querySelector("select[data-honours-season]"); if (s) s.focus(); }
   });
   // =====================================================================
@@ -1946,7 +2465,31 @@
     return rows.filter(function (r) { return parseDate(r[0]) && !isJuniorCategory(r[1]); }).map(function (r) { return r.slice(0, 11); });
   }
 
+  // With the privacy service on, one ready-made, already-filtered file comes
+  // from it (juniors removed, hidden names removed); no sheet IDs are public.
+  function loadFromService() {
+    return new Promise(function (resolve) {
+      const cb = "__dbData" + Date.now();
+      const script = document.createElement("script");
+      const finish = function (res) {
+        try { delete window[cb]; } catch (e) { window[cb] = undefined; }
+        if (script.parentNode) script.parentNode.removeChild(script);
+        resolve(res);
+      };
+      const timer = setTimeout(function () { finish({ raw: [], failed: 1 }); }, 30000);
+      window[cb] = function (res) {
+        clearTimeout(timer);
+        if (!res || !res.ok || !Array.isArray(res.archers)) { finish({ raw: [], failed: 1 }); return; }
+        finish({ raw: res.archers.map(function (x) { return { id: x.k, name: x.withheld ? null : x.name, withheld: !!x.withheld, rows: x.rows || [] }; }), failed: 0 });
+      };
+      script.onerror = function () { clearTimeout(timer); finish({ raw: [], failed: 1 }); };
+      script.src = SERVICE_URL + (SERVICE_URL.indexOf("?") === -1 ? "?" : "&") + "action=data&callback=" + cb;
+      document.head.appendChild(script);
+    });
+  }
+
   function loadAll(onProgress) {
+    if (SERVICE_URL) return loadFromService();
     const out = [];
     let next = 0, done = 0, failed = 0;
     return new Promise(function (resolve) {
@@ -2019,7 +2562,11 @@
       const res = both[1];
       if (!res.raw.length) {
         if (state.loaded) setStatus(statusText("couldn't reach the sheets, showing the copy saved " + fmtDate(new Date(cached.savedAt))), true);
-        else setStatus("Couldn't read the members' score sheets. Please try again later.", true);
+        else {
+          setStatus("Couldn't read the members' score sheets. Please try again later.", true);
+          prepare([]); // still show the Privacy and admin pages
+          render();
+        }
         return;
       }
       // Keep a cached member if their sheet failed this time.

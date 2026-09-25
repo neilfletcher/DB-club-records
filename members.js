@@ -1,77 +1,14 @@
-// Adult members' score sheets in the record keeper's "Handicaps" Google Drive folder.
-// Each entry is a Drive file ID: the long code after /d/ in the sheet's address.
-// The site only ever READS these sheets; it never changes the Drive.
-// Junior-only sheets are deliberately left out, and any junior rows in these
-// sheets are dropped as they are read.
-// To add a member: open their sheet from the folder, copy the ID from the address
-// bar and add it to the list below (in quotes, followed by a comma).
-// Privacy service and admin sign-in (see "admin set-up guide.txt" in the
-// DB-club-records-admin folder). Leave both empty to switch these off.
+// Site settings for the Duston Bowmen records site.
+//
+// CLUB_SERVICE_URL and CLUB_GOOGLE_CLIENT_ID switch on the data and privacy
+// service and the site admin (see "admin set-up guide.txt" in the
+// DB-club-records-admin folder):
 //   CLUB_SERVICE_URL: the Apps Script web app address, ending in /exec
 //   CLUB_GOOGLE_CLIENT_ID: the Google sign-in client ID, ending in .apps.googleusercontent.com
 window.CLUB_SERVICE_URL = "https://script.google.com/macros/s/AKfycbwKCE9npLG6aRLzaC-AbdaSIoexWYgooYCHf93-aEGma53Dwd9MJ7QQxa78g-GHxcAoeA/exec";
 window.CLUB_GOOGLE_CLIENT_ID = "29858523179-m3aqpk9n6er8mttn0isii75hd67pnnpj.apps.googleusercontent.com";
 
-window.CLUB_MEMBERS = [
-  "19nNEDqPO21jzBy_rKGH0c83gTCZphz2g",
-  "1XIG1weUzAOCKdaq79P-hYWX1fSLXlgRz",
-  "1c_5pIYEe8HUYQz-UQm7SPdF_td77zSp-",
-  "1Cc6hL4lT7CWu8v-5vSkTZv20tAcw60QL",
-  "1R0dPQMTMb9fYcGzr_m94u4tdepxoBF61",
-  "1jOlSz8WJoWTwfgn5z9dBU5sMw21melmN",
-  "1OB07nncrxif2mEgPHcVNi92B7TyIyjtT",
-  "1yUqrrxpoBWgZAId9b4MzKa0EEU8uMAJV",
-  "1bj7uRBn01CP8dJwy_MMbwt7G4wzXVJPT",
-  "1wPlComp4g9MMcpGM3ISD9wCwB-pxchb2",
-  "1lHYbahv6t5of_CB85HXvkbTBoTSZJAN0",
-  "1j4gex7rNUSN3pFU3P_c8FfWggSUoA0_U",
-  "1nXR-N_CCAxghLhsikrneZotY8f75b7ML",
-  "13rZEGt2NxzoTn4GROmfDJYFxS3h773np",
-  "1XrdkJK3T4-J3EW_co0NE5n4EeiC-Zr17",
-  "1ZToW5Yy2PQUr7daouSWhumLnv3UMiA27",
-  "1i7ZagGGNoZCLczwMEnCO8NHLDYjjTELF",
-  "1Lh3zmWT5zDFSwbJc_CVjOqBHB35dObR7",
-  "1S6b1HzUZAcWSAM4D3B9BX9q_UC0SfZV8",
-  "1FX1wb5-eQTlmvGeXDijhmyygYZnz5269",
-  "1jBoPyEHSZIZ71UcxwzMjI9_YLzUnG_G2",
-  "1AAUsMoshmcDwFmQDCwr4o0N6deo32G0k",
-  "1igJ9Fjv1gzcQ4HDp8xFCaduWHnqzBsNx",
-  "15w3HCg5hcDMUx_CDMF4TZn-n-dmimiCU",
-  "1JVOqvxVYjDC2GUs65Fjva4R4KAGb-4t0",
-  "1i5ZpI1IMTJvI20sXLiMB-zkPzUpeFR1_",
-  "1X-oBaC6t6VedhBEpQzZhBGGMd90V3ppe",
-  "1-ZWylnLk_HL1Idz18qF7VLwbMJ6Bw1vC",
-  "1oBpm1qZh2FqEvmYZaevL2zyF8XTCMxw_",
-  "1y3vC3sS-nC21vP-vZLgcSL3Btw3l3f7z",
-  "15XFZQoFT9Kr_YOBJdIkk73lH7P-DDowf",
-  "1lQEuy3MMD8VXBeke2z-Q5GHKObMNtXtx",
-  "1m4oZo7Vcwa_nPuSzAOZ4uq0OZPd4F24_",
-  "1JZfPRtyJ34Lff6Cd27NGsxh5ZnwpncSm",
-  "1IKox5sVcHPl2vyFzDbpFI3RgW0xqeNDS",
-  "1ySfVIShaBw6LKRtrSfw3skQr50m0JcoL",
-  "1M1qV3uPyAp-YdcysJVPx_5XQ-aE-LvOn",
-  "1Etld0b52WzCwYAUJJCjK41j4hZR0M8hZ",
-  "1cm0klFvQPp5hMvOrENk2EhT7aoNs9P7o",
-  "1Kj7ALp4oEitJxf1OwfeegQl9KaafnrqH",
-  "1p2d1I28I6w478BDhAairNinYX7Jmdd4j",
-  "1DVGYJ0P4xoMzBeZQt8EEmxbU24IDzrvG",
-  "1P9h5HHYu8QK1GkkfXIjs0P9lISW3eLiy",
-  "122rbulOG_Qn4K7kYAViK2rJOaR-jNjOF",
-  "1JV3EzC1yJLFccNoEFZVW1yZWnmWapNQy",
-  "1jZoVKAkRFsgULGGq4JLur57nAimjd5Da",
-  "1i6dpx2tTB9F60E7EQ6icAjY6kwzyFHpp",
-  "1WU33JG5h86to_PSeDSyZYpqjtKDSE2EN",
-  "1-CbfH-yiTWsyXaOrw2tZSmjg2C4dGJiF",
-  "16BIIugI7TuWSaM6iTVw9Gn-kaRDU8flt",
-  "1KkzN9r1H6Cfbqb67pmMr_wVkuNbVigua",
-  "1sQMbC6f0bfyGsNrIaSCDonTSDZQwB0bq",
-  "1koi-WcxlGn-rpYJtK7usSiC0CyWWCa4H",
-  "15WRt2CmiRRuWGQJRrBO_d75XNHdX3uIj",
-  "1XD6A6kD1zWJU66X8mu20kn8YAFHyATe1",
-  "1gK3WCrJTTeS2HZc7LJNrxLuV6M9vNz49",
-  "1daW_pUVk-NXDLMwUX08gdXXBHsN0ug3C",
-  "1pf1atlDQW1hSa-RmjlwctQMWsLGHwErE",
-  "11vonzMg4yNuaotoNOsuuN_FB6WIKkNRO",
-  "1Qg8u1woEARPUbqkOgZSbQBcrjn9gEMLS",
-  "18b9lkDk7rTi1qTlcijunIM7MA9k79S8C",
-];
+// The service reads the members' sheets itself, so this list stays empty to
+// keep the sheet links off the public site. Add or remove sheets on the
+// site's admin page. (It is only used if CLUB_SERVICE_URL is ever emptied.)
+window.CLUB_MEMBERS = [];
