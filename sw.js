@@ -1,6 +1,6 @@
 // Offline support: keeps the page, its data tables and Chart.js available
 // without a connection. Sheet data itself is cached by the page in localStorage.
-const CACHE = "db-club-records-v5";
+const CACHE = "db-club-records-v6";
 const SHELL = ["./", "agb-data.js", "members.js", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 const CDN = ["https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.js"];
 

@@ -2361,7 +2361,7 @@
       '<div class="controls-row"><label class="ctl">Period <select data-awards-season>' + seasons.map(function (s) {
         return '<option value="' + s + '"' + (s === k ? " selected" : "") + ">" + escapeHtml(awardLabel(s)) + "</option>";
       }).join("") + '</select></label><button type="button" class="btn no-print" data-print-awards>Print awards</button></div></div>';
-    html += '<div class="awards-sheet" id="awardsSheet"><h2 class="print-only">' + escapeHtml(CLUB_NAME) + " awards: " + escapeHtml(awardLabel(k)) + "</h2>";
+    html += '<div class="awards-sheet print-target" id="awardsSheet"><h2 class="print-only">' + escapeHtml(CLUB_NAME) + " awards: " + escapeHtml(awardLabel(k)) + "</h2>";
     html += '<div class="tile-row">' + tile("Scores", list.length, "logged") + tile("Archers", new Set(list.map(function (e) { return e.member.id; })).size, "shot") +
       tile("Club records broken", list.filter(function (e) { return has(e, "record"); }).length, "") + tile("Personal bests", list.filter(function (e) { return has(e, "pb"); }).length, "") + "</div>";
     html += '<div class="award-grid">' +
