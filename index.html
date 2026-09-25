@@ -1153,7 +1153,21 @@
       const entries = buildEntries(r.rows);
       if (!entries.length) return;
       if (isJuniorCategory(entries[entries.length - 1].category)) return;
-      const adult = entries.filter(function (e) { return !isJuniorCategory(e.category); });
+      // Some scores are entered twice under old and new category names
+      // ("Gentlemen" and "Male Senior"): count them once, keeping the newer
+      // category (it says whether the archer was 50+).
+      const legacy = function (c) { return /gentlemen|ladies/i.test(c); };
+      const keep = {};
+      const dupKey = function (e) { return [+e.date, genderOf(e.category), e.bowType, e.round.toLowerCase(), e.score].join("|"); };
+      entries.forEach(function (e) {
+        const k = dupKey(e), prev = keep[k];
+        if (!prev || (prev.category !== e.category && legacy(prev.category) && !legacy(e.category))) keep[k] = e;
+      });
+      const adult = entries.filter(function (e) {
+        if (isJuniorCategory(e.category)) return false;
+        const k = dupKey(e);
+        return keep[k] === e || keep[k].category === e.category;
+      });
       if (!adult.length) return;
       // A score above the round's maximum is a typo in the sheet: ignore it
       // (it shows up in the admin data checks).
@@ -1921,6 +1935,49 @@
     return e._hc;
   }
 
+  // Classification level: where a handicap sits on the Archery GB 2023
+  // classification ladder for that bow type, gender and age group. Bow types
+  // have their classes at different handicaps (a barebow Master Bowman is a
+  // much higher handicap than a compound one), so raw handicaps only compare
+  // within a bow type. Level 1 is Archer 3rd Class, 4 Bowman 3rd Class,
+  // 7 Master Bowman, 8 Grand Master Bowman, 9 Elite Master Bowman; values in
+  // between are interpolated. Flatbow uses the barebow ladder, as Archery GB
+  // does.
+  function classLevel(hc, loc, bow, gender, age) {
+    if (hc === null || hc === undefined) return null;
+    const b = bow === "Flatbow" ? "Barebow" : bow;
+    const w = AGB.classHandicaps(loc, b, gender === "Female" ? "Female" : "Open", age === "50+" ? "50+" : "Adult");
+    if (!w || w.length < 2) return null;
+    const n = w.length;
+    let lvl;
+    if (hc >= w[0]) lvl = 1 - (hc - w[0]) / (w[0] - w[1]);
+    else if (hc <= w[n - 1]) lvl = n + (w[n - 1] - hc) / (w[n - 2] - w[n - 1]);
+    else {
+      let i = 0;
+      while (!(w[i] >= hc && hc > w[i + 1])) i++;
+      lvl = i + 1 + (w[i] - hc) / (w[i] - w[i + 1]);
+    }
+    return Math.round(lvl * 10) / 10;
+  }
+  // A score's level for the archer who shot it (their own gender and age group).
+  function levelOf(e) {
+    if (e._lvl === undefined) e._lvl = classLevel(hcOf(e), e.loc, e.bucket, e.gender, e.ageGroup);
+    return e._lvl;
+  }
+  // A record's level on the adult ladder for its category, so the holder's age
+  // doesn't make a record look harder or easier to beat.
+  function recordLevel(e, hc) {
+    return classLevel(hc === undefined ? hcOf(e) : hc, e.loc, e.bucket, e.gender, "Adult");
+  }
+  function levelStandard(lvl, loc) {
+    if (lvl === null) return "";
+    const i = Math.min(Math.floor(lvl), SHORT[loc].length) - 1;
+    return i >= 0 ? SHORT[loc][i] : "below " + SHORT[loc][0];
+  }
+  function levelCell(lvl, loc) {
+    return lvl === null ? "-" : '<strong>' + lvl.toFixed(1) + '</strong> <span class="muted small">' + escapeHtml(levelStandard(lvl, loc)) + "</span>";
+  }
+
   function categoryLabel(e) {
     return e.bucket + " · " + e.gender2.toLowerCase() + " · " + e.loc;
   }
@@ -1972,41 +2029,45 @@
         const c = { m: m, recent: bestRecent, predicted: predicted, hc: Math.min.apply(null, challengeHc) };
         if (!best || c.hc < best.hc) best = c;
       });
-      if (best && recHc !== null) risk.push({ rec: rec, c: best, gap: best.hc - recHc });
+      if (best && recHc !== null) {
+        const lr = recordLevel(rec, recHc), lc = recordLevel(rec, best.hc);
+        risk.push({ rec: rec, c: best, gap: best.hc - recHc, lgap: lr !== null && lc !== null ? Math.round((lr - lc) * 10) / 10 : null });
+      }
     });
-    risk.sort(function (a, b) { return a.gap - b.gap || b.rec.score - a.rec.score; });
+    risk.sort(function (a, b) { return (a.lgap === null) - (b.lgap === null) || a.lgap - b.lgap || a.gap - b.gap || b.rec.score - a.rec.score; });
 
     let html = '<div class="card"><h2>Challenges</h2><p class="card-note">Which club records could fall next, which are there for the taking, and which categories have no record yet. ' +
       "Uses archers active in the last 12 months. Predicted scores come from each archer's current handicap and the Archery GB 2023 tables.</p>" +
       '<div class="controls-row">' + segButtons("chal.loc", [["all", "Indoor and outdoor"], ["outdoor", "Outdoor"], ["indoor", "Indoor"]], f.loc) +
       segButtons("chal.bow", bowOptions(true), f.bow) + "</div></div>";
 
-    html += '<div class="card"><h2>Records most at risk</h2><p class="card-note">Ranked by how close the nearest challenger is, in handicap terms, so different rounds compare fairly. ' +
+    html += '<div class="card"><h2>Records most at risk</h2><p class="card-note">Ranked by how close the nearest challenger is, measured in Archery GB classification bands so different rounds and bow types compare fairly (a gap of 1.0 is one full class). ' +
       '<span class="badge ev ev-record">WITHIN REACH</span> means their current handicap already predicts a score above the record.</p>';
     if (!risk.length) html += '<p class="muted small">No active challengers for this selection.</p>';
     else {
-      html += '<div class="table-wide-scroll"><table><thead><tr><th>Round</th><th>Category</th><th class="num">Record</th><th>Held by</th><th>Nearest challenger</th><th class="num">Best recent</th><th class="num">Predicted</th><th class="num">Hcp gap</th></tr></thead><tbody>';
+      html += '<div class="table-wide-scroll"><table><thead><tr><th>Round</th><th>Category</th><th class="num">Record</th><th>Held by</th><th>Nearest challenger</th><th class="num">Best recent</th><th class="num">Predicted</th><th class="num">Gap</th><th class="num">Hcp gap</th></tr></thead><tbody>';
       risk.slice(0, 15).forEach(function (r) {
         const reach = r.c.predicted !== null && r.c.predicted > r.rec.score;
         html += "<tr><td>" + escapeHtml(roundLabel(roundKey(r.rec), r.rec)) + '</td><td class="nowrap">' + bowDot(r.rec.bucket) + escapeHtml(categoryLabel(r.rec)) +
           '</td><td class="num"><strong>' + r.rec.score + "</strong></td><td>" + nameCell(r.rec.member) + "</td><td>" + escapeHtml(r.c.m.name) +
           (reach ? ' <span class="badge ev ev-record">WITHIN REACH</span>' : "") + '</td><td class="num">' +
           (r.c.recent ? r.c.recent.score + ' <span class="muted small">(' + (r.rec.score - r.c.recent.score > 0 ? "-" + (r.rec.score - r.c.recent.score) : "+" + (r.c.recent.score - r.rec.score)) + ")</span>" : "-") +
-          '</td><td class="num">' + (r.c.predicted !== null ? r.c.predicted : "-") + '</td><td class="num">' + (r.gap <= 0 ? '<span class="status-good">' + r.gap + "</span>" : r.gap) + "</td></tr>";
+          '</td><td class="num">' + (r.c.predicted !== null ? r.c.predicted : "-") + '</td><td class="num">' + (r.lgap === null ? "-" : r.lgap <= 0 ? '<span class="status-good">' + r.lgap.toFixed(1) + "</span>" : "<strong>" + r.lgap.toFixed(1) + "</strong>") + '</td><td class="num muted">' + (r.gap <= 0 ? '<span class="status-good">' + r.gap + "</span>" : r.gap) + "</td></tr>";
       });
       html += "</tbody></table></div>";
     }
     html += "</div>";
 
     // Softest: records representing the weakest handicap, on rounds people shoot.
-    const soft = records.filter(function (e) { return hcOf(e) !== null; }).sort(function (a, b) { return hcOf(b) - hcOf(a); }).slice(0, 12);
-    html += '<div class="card"><h2>Softest records</h2><p class="card-note">Records set at the highest (weakest) handicap: the easiest ones to beat.</p>';
+    const soft = records.filter(function (e) { return recordLevel(e) !== null; }).sort(function (a, b) { return recordLevel(a) - recordLevel(b) || hcOf(b) - hcOf(a); }).slice(0, 12);
+    html += '<div class="card"><h2>Softest records</h2><p class="card-note">Records at the lowest Archery GB classification level for their bow type and gender: the easiest ones to beat. ' +
+      "Levels compare across bow types (1 is Archer 3rd Class, 4 Bowman 3rd Class, 7 Master Bowman); the handicap alone doesn't, because each bow type's classes sit at different handicaps.</p>";
     if (!soft.length) html += '<p class="muted small">No records for this selection.</p>';
     else {
-      html += '<div class="table-wide-scroll"><table><thead><tr><th>Round</th><th>Category</th><th class="num">Record</th><th class="num">Hcp</th><th>Held by</th><th>Since</th></tr></thead><tbody>';
+      html += '<div class="table-wide-scroll"><table><thead><tr><th>Round</th><th>Category</th><th class="num">Record</th><th class="num">Level</th><th class="num">Hcp</th><th>Held by</th><th>Since</th></tr></thead><tbody>';
       soft.forEach(function (e) {
         html += "<tr><td>" + escapeHtml(roundLabel(roundKey(e), e)) + '</td><td class="nowrap">' + bowDot(e.bucket) + escapeHtml(categoryLabel(e)) + '</td><td class="num">' + e.score +
-          '</td><td class="num">' + hcOf(e) + "</td><td>" + nameCell(e.member) + '</td><td class="nowrap">' + fmtDate(e.date) + "</td></tr>";
+          '</td><td class="num nowrap">' + levelCell(recordLevel(e), e.loc) + '</td><td class="num muted">' + hcOf(e) + "</td><td>" + nameCell(e.member) + '</td><td class="nowrap">' + fmtDate(e.date) + "</td></tr>";
       });
       html += "</tbody></table></div>";
     }
@@ -2093,14 +2154,15 @@
   // Best performances (Stats tab)
   // =====================================================================
   function bestPerformancesCard(f) {
-    const list = state.visible.filter(function (e) { return statPasses(e, f) && !e.isLadder && hcOf(e) !== null && DISCIPLINE_COLOR[e.bucket]; })
-      .sort(function (a, b) { return hcOf(a) - hcOf(b) || a.date - b.date; }).slice(0, 20);
-    let html = '<div class="card"><h2>Best performances</h2><p class="card-note">The strongest scores on any round, ranked by the handicap they represent (Archery GB 2023 tables), so a great York and a great Portsmouth compare fairly.</p>';
+    const list = state.visible.filter(function (e) { return statPasses(e, f) && !e.isLadder && levelOf(e) !== null && DISCIPLINE_COLOR[e.bucket]; })
+      .sort(function (a, b) { return levelOf(b) - levelOf(a) || hcOf(a) - hcOf(b) || a.date - b.date; }).slice(0, 20);
+    let html = '<div class="card"><h2>Best performances</h2><p class="card-note">The strongest scores on any round and bow type, ranked by Archery GB classification level for the archer\'s bow, gender and age group ' +
+      "(1 is Archer 3rd Class, 4 Bowman 3rd Class, 7 Master Bowman, 8 Grand Master Bowman). A great barebow York and a great compound Portsmouth compare fairly; raw handicaps don't, because each bow type's classes sit at different handicaps.</p>";
     if (!list.length) return html + '<p class="muted small">No scores for this selection.</p></div>';
-    html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">#</th><th class="num">Hcp</th><th>Archer</th><th>Round</th><th class="num">Score</th><th>Bow</th><th>Date</th></tr></thead><tbody>';
+    html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">#</th><th class="num">Level</th><th>Archer</th><th>Round</th><th class="num">Score</th><th>Bow</th><th class="num">Hcp</th><th>Date</th></tr></thead><tbody>';
     list.forEach(function (e, i) {
-      html += '<tr><td class="num muted">' + (i + 1) + '</td><td class="num"><strong>' + hcOf(e) + "</strong></td><td>" + escapeHtml(e.member.name) + "</td><td>" + escapeHtml(e.round) +
-        '</td><td class="num">' + e.score + '</td><td class="nowrap">' + bowDot(e.bucket) + e.bucket + '</td><td class="nowrap">' + fmtDate(e.date) + "</td></tr>";
+      html += '<tr><td class="num muted">' + (i + 1) + '</td><td class="num nowrap">' + levelCell(levelOf(e), e.loc) + "</td><td>" + escapeHtml(e.member.name) + "</td><td>" + escapeHtml(e.round) +
+        '</td><td class="num">' + e.score + '</td><td class="nowrap">' + bowDot(e.bucket) + e.bucket + '</td><td class="num muted">' + hcOf(e) + '</td><td class="nowrap">' + fmtDate(e.date) + "</td></tr>";
     });
     return html + "</tbody></table></div></div>";
   }
@@ -2344,8 +2406,8 @@
     });
     improved.sort(function (a, b) { return b.v - a.v; });
 
-    const bestPerf = list.filter(function (e) { return !e.isLadder && hcOf(e) !== null; }).sort(function (a, b) { return hcOf(a) - hcOf(b); }).slice(0, 3)
-      .map(function (e) { return { m: e.member, text: e.round + " " + e.score + " (" + e.bucket.toLowerCase() + ", handicap " + hcOf(e) + ")" }; });
+    const bestPerf = list.filter(function (e) { return !e.isLadder && levelOf(e) !== null; }).sort(function (a, b) { return levelOf(b) - levelOf(a) || hcOf(a) - hcOf(b); }).slice(0, 3)
+      .map(function (e) { return { m: e.member, text: e.round + " " + e.score + " (" + e.bucket.toLowerCase() + ", " + levelStandard(levelOf(e), e.loc) + " standard)" }; });
 
     const classWinners = [];
     DISCIPLINE_ORDER.forEach(function (b) {
