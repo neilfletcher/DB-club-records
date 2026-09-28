@@ -1090,7 +1090,7 @@
     rec: { loc: "outdoor", bow: "Recurve", gender: "all", age: "open", jage: null, period: "all", open: null },
     recent: { days: 90 },
     honours: { season: null, bow: "all" },
-    hcp: { bow: "all", sort: "hcp" },
+    hcp: { bow: "all", sort: "hcp", period: "12m" },
     badges: { bow: "all" },
     stats: { loc: "all", bow: "all", period: "all" },
     chal: { loc: "all", bow: "all" },
@@ -1424,35 +1424,41 @@
   function buildHandicaps() {
     const f = state.hcp;
     const yearAgo = new Date(state.now.getTime() - 365 * 864e5);
+    const all = f.period === "all";
+    const from = all ? new Date(0) : yearAgo;
     const rows = [];
     state.members.forEach(function (m) {
       Object.keys(m.byBow).forEach(function (b) {
         if (!DISCIPLINE_COLOR[b] || (f.bow !== "all" && b !== f.bow)) return;
-        const recent = m.byBow[b].filter(function (e) { return e.date >= yearAgo; });
+        const recent = m.byBow[b].filter(function (e) { return e.date >= from; });
         const withRun = recent.filter(function (e) { return e.hcRunning !== null; });
         if (!withRun.length) return;
         const last = withRun[withRun.length - 1];
-        const before = m.byBow[b].filter(function (e) { return e.hcRunning !== null && e.date < yearAgo; });
+        const before = m.byBow[b].filter(function (e) { return e.hcRunning !== null && e.date < from; });
         const start = before.length ? before[before.length - 1] : withRun[0];
         const bestRound = minBy(recent.filter(function (e) { return e.hcRound !== null; }), function (e) { return e.hcRound; });
-        rows.push({ m: m, bow: b, hcp: last.hcRunning, change: start.hcRunning - last.hcRunning, shots: recent.length, last: recent[recent.length - 1].date, bestRound: bestRound });
+        rows.push({ m: m, bow: b, hcp: last.hcRunning, change: start.hcRunning - last.hcRunning, shots: recent.length, last: recent[recent.length - 1].date, bestRound: bestRound, lapsed: last.date < yearAgo });
       });
     });
     if (f.sort === "improved") rows.sort(function (a, b) { return b.change - a.change || a.hcp - b.hcp; });
     else rows.sort(function (a, b) { return a.hcp - b.hcp || b.change - a.change; });
 
-    let html = '<div class="card"><h2>Handicaps</h2><p class="card-note">Current running handicap from each archer\'s sheet, for bow types shot in the last 12 months. ' +
-      "Lower is better. Improvement compares with where the handicap stood 12 months ago (or at the first shoot since).</p>";
+    let html = '<div class="card"><h2>Handicaps</h2><p class="card-note">' + (all
+      ? "Latest running handicap from each archer\'s sheet for every bow type they have shot, including people who haven\'t shot for a while. " +
+        "Archery GB handicaps lapse after 12 months without a qualifying score, so older ones are marked <span class=\"badge\">LAPSED</span>. Lower is better. Change is since their first recorded handicap.</p>"
+      : "Current running handicap from each archer\'s sheet, for bow types shot in the last 12 months (as Archery GB uses). " +
+        "Lower is better. Improvement compares with where the handicap stood 12 months ago (or at the first shoot since).</p>");
     html += '<div class="controls-row">' + segButtons("hcp.bow", bowOptions(true), f.bow) +
+      segButtons("hcp.period", [["12m", "Last 12 months"], ["all", "All time"]], f.period) +
       segButtons("hcp.sort", [["hcp", "Best handicap"], ["improved", "Most improved"]], f.sort) + "</div>";
-    if (!rows.length) return html + '<p class="muted">No handicaps in the last 12 months for this selection.</p></div>';
-    html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">#</th><th>Archer</th><th>Bow type</th><th class="num">Handicap</th><th class="num">12-month change</th>' +
-      '<th>Best round (12 months)</th><th class="num">Shoots</th><th>Last shoot</th></tr></thead><tbody>';
+    if (!rows.length) return html + '<p class="muted">No handicaps ' + (all ? "" : "in the last 12 months ") + "for this selection.</p></div>";
+    html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">#</th><th>Archer</th><th>Bow type</th><th class="num">Handicap</th><th class="num">' + (all ? "Change" : "12-month change") + "</th>" +
+      "<th>Best round" + (all ? "" : " (12 months)") + '</th><th class="num">Shoots</th><th>Last shoot</th></tr></thead><tbody>';
     rows.forEach(function (r, i) {
       const ch = r.change > 0 ? '<span class="status-good">▲ ' + r.change + "</span>" : r.change < 0 ? '<span class="status-warn">▼ ' + (-r.change) + "</span>" : '<span class="muted">0</span>';
       html += '<tr><td class="num muted">' + (i + 1) + "</td><td>" + escapeHtml(r.m.name) + '</td><td class="nowrap">' + bowDot(r.bow) + r.bow + '</td><td class="num"><strong>' + r.hcp +
         '</strong></td><td class="num">' + ch + "</td><td>" + (r.bestRound ? escapeHtml(r.bestRound.round) + " " + r.bestRound.score + ' <span class="muted small">(hcp ' + r.bestRound.hcRound + ")</span>" : "-") +
-        '</td><td class="num">' + r.shots + '</td><td class="nowrap">' + fmtDate(r.last) + "</td></tr>";
+        '</td><td class="num">' + r.shots + '</td><td class="nowrap">' + fmtDate(r.last) + (r.lapsed ? ' <span class="badge" title="No score for over 12 months: this Archery GB handicap has lapsed">LAPSED</span>' : "") + "</td></tr>";
     });
     html += "</tbody></table></div></div>";
     return html;
