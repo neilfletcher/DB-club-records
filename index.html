@@ -385,6 +385,7 @@
     Junior scores count towards club records and leagues; archers under 18 are never named.<br>
     Handicaps and classifications use the Archery GB 2023 scheme (older scores keep the handicaps recorded at the time). Classification scores come from
     <a href="https://github.com/jatkinson1000/archery-utils" target="_blank" rel="noopener">archeryutils</a>. Spotted a mistake? Tell the record keeper; this page only reads the sheets.<br>
+    Track your own scores: the <a href="https://neilfletcher.github.io/DB-archery-dashboard/">club score tracker</a> shows handicap progress, PBs and classifications for any member's sheet.<br>
     <a href="#privacy">Privacy</a> · <a href="#admin">Site admin</a>
   </footer>
 
@@ -718,8 +719,29 @@
   }
 
   function buildEntries(rows) {
-    const out = [];
-    rows.forEach(function (r) { const e = entryFromRow(r); if (e) out.push(e); });
+    const all = [];
+    rows.forEach(function (r) { const e = entryFromRow(r); if (e) all.push(e); });
+    // Some scores are entered twice under old and new category names
+    // ("Gentlemen" and "Male Senior"): count them once, keeping the newer
+    // category (it says whether the archer was 50+).
+    const legacy = function (c) { return /gentlemen|ladies/i.test(c); };
+    const gender = function (c) { return /female|lady|ladies|women|girl/i.test(c) ? "F" : "M"; };
+    const dupKey = function (e) { return [+e.date, gender(e.category), e.bowType, e.round.toLowerCase(), e.score].join("|"); };
+    const keep = {};
+    all.forEach(function (e) {
+      const k = dupKey(e), prev = keep[k];
+      if (!prev || (prev.category !== e.category && legacy(prev.category) && !legacy(e.category))) keep[k] = e;
+    });
+    const out = all.filter(function (e) { const k = dupKey(e); return keep[k] === e || keep[k].category === e.category; });
+    // A score above the round's maximum is a typo in the sheet: keep the row
+    // but ignore the score (it is listed on the overview).
+    out.forEach(function (e) {
+      const info = AGB.round(e.code);
+      if (info && e.score !== null && e.score > info.max) {
+        e.badScore = e.score; e.score = null; e.hcRound = null; e.hcAdjusted = null;
+        if (e.classDerived) { e.classRank = -1; e.classification = null; e.classDerived = false; }
+      }
+    });
     out.sort(by(function (e) { return e.date; }));
     return out;
   }
