@@ -369,7 +369,7 @@
 
   <footer>
     A read-only view of the club record keeper's score sheets, refreshed on each visit; the last copy is kept in your browser so the page works offline.
-    Junior members and junior scores are never shown.<br>
+    Junior scores count towards club records and leagues, but juniors are never named.<br>
     Handicaps and classifications use the Archery GB 2023 scheme (older scores keep the handicaps recorded at the time). Classification scores come from
     <a href="https://github.com/jatkinson1000/archery-utils" target="_blank" rel="noopener">archeryutils</a>. Spotted a mistake? Tell the record keeper; this page only reads the sheets.<br>
     <a href="#privacy">Privacy</a> · <a href="#admin">Site admin</a>
@@ -1061,6 +1061,7 @@
   const SERVICE_URL = String(window.CLUB_SERVICE_URL || "").trim();
   const GOOGLE_CLIENT_ID = String(window.CLUB_GOOGLE_CLIENT_ID || "").trim();
   const WITHHELD = "Name withheld";
+  const JUNIOR = "Junior archer";
   const STORAGE = RSTORE; // the shared theme code reads STORAGE.theme
 
   // Juniors are never shown: any row with a junior category is dropped as
@@ -1086,7 +1087,7 @@
     tab: "records",
     now: new Date(),
     failed: 0,
-    rec: { loc: "outdoor", bow: "Recurve", gender: "all", age: "open", period: "all", open: null },
+    rec: { loc: "outdoor", bow: "Recurve", gender: "all", age: "open", jage: null, period: "all", open: null },
     recent: { days: 90 },
     honours: { season: null, bow: "all" },
     hcp: { bow: "all", sort: "hcp" },
@@ -1139,6 +1140,7 @@
   function sanitize(raw) {
     return Promise.all(raw.map(function (r) {
       if (!r) return null;
+      if (r.junior) return { id: r.id, rows: r.rows, name: null, withheld: true, junior: true };
       if (!r.name) return { id: r.id, rows: r.rows, name: null, withheld: true };
       return sha256(normName(r.name)).then(function (h) {
         const hide = isHidden(h);
@@ -1153,7 +1155,10 @@
       if (!r || !r.rows || !r.rows.length) return;
       const entries = buildEntries(r.rows);
       if (!entries.length) return;
-      if (isJuniorCategory(entries[entries.length - 1].category)) return;
+      // Juniors only come from the privacy service, already separated from
+      // adults and without names; anything junior in a named sheet is dropped.
+      const isJ = !!r.junior;
+      if (!isJ && isJuniorCategory(entries[entries.length - 1].category)) return;
       // Some scores are entered twice under old and new category names
       // ("Gentlemen" and "Male Senior"): count them once, keeping the newer
       // category (it says whether the archer was 50+).
@@ -1165,7 +1170,7 @@
         if (!prev || (prev.category !== e.category && legacy(prev.category) && !legacy(e.category))) keep[k] = e;
       });
       const adult = entries.filter(function (e) {
-        if (isJuniorCategory(e.category)) return false;
+        if (!isJ && isJuniorCategory(e.category)) return false;
         const k = dupKey(e);
         return keep[k] === e || keep[k].category === e.category;
       });
@@ -1179,7 +1184,8 @@
           if (e.classDerived) { e.classRank = -1; e.classification = null; e.classDerived = false; }
         }
       });
-      const m = { id: r.id, name: r.withheld ? WITHHELD : (r.name || "Unnamed archer"), withheld: !!r.withheld, entries: adult };
+      if (isJ) adult.forEach(function (e) { if (!/^U\d/.test(e.ageGroup)) e.ageGroup = "Junior"; });
+      const m = { id: r.id, name: isJ ? JUNIOR : r.withheld ? WITHHELD : (r.name || "Unnamed archer"), withheld: isJ || !!r.withheld, junior: isJ, entries: adult };
       adult.forEach(function (e) { e.member = m; e.gender2 = genderOf(e.category); });
       const byBow = {};
       adult.forEach(function (e) { (byBow[e.bucket] = byBow[e.bucket] || []).push(e); });
@@ -1219,7 +1225,7 @@
     state.entries.forEach(function (e) {
       if (!e.round || e.score === null || e.isLadder || e.bucket !== f.bow || e.loc !== f.loc) return;
       if (f.gender !== "all" && e.gender2 !== f.gender) return;
-      if (f.age === "50" && e.ageGroup !== "50+") return;
+      if (!juniorAgeOk(e, f)) return;
       if (f.period === "year" && e.date.getFullYear() !== state.now.getFullYear()) return;
       if (f.period === "12m" && !within(e, 365)) return;
       const k = roundKey(e);
@@ -1246,8 +1252,12 @@
 
   function buildRecords() {
     const f = state.rec;
+    const ages = juniorAges();
+    if (f.age === "junior" && !ages.length) f.age = "open";
+    if (f.age === "junior" && ages.indexOf(f.jage) === -1) f.jage = ages[0];
     const rows = recordRows(f);
-    let html = '<div class="card"><h2>Club records</h2><p class="card-note">Best score on each round by an adult member, from the record keeper\'s sheets. ' +
+    let html = '<div class="card"><h2>Club records</h2><p class="card-note">Best score on each round, from the record keeper\'s sheets. ' +
+      "Juniors can hold club records and have their own age-group records under Juniors; for safeguarding they are never named, and show as \"" + JUNIOR + "\". " +
       "Triple-face and single-face versions of a round are counted together. 252 practice rounds are on the 252 badges tab. Click a round to see its record history. " +
       '<span class="badge ev ev-record">NEW</span> marks a record set in the last ' + NEW_RECORD_DAYS + " days.</p>";
     html += '<div class="controls-row">' +
@@ -1255,8 +1265,9 @@
       segButtons("rec.bow", bowOptions(false), f.bow) + "</div>" +
       '<div class="controls-row">' +
       segButtons("rec.gender", [["all", "All"], ["Men", "Men"], ["Women", "Women"]], f.gender) +
-      segButtons("rec.age", [["open", "All adults"], ["50", "50+"]], f.age) +
-      segButtons("rec.period", [["all", "All time"], ["12m", "Last 12 months"], ["year", String(state.now.getFullYear())]], f.period) + "</div>";
+      segButtons("rec.age", [["open", "Club"], ["50", "50+"]].concat(juniorAges().length ? [["junior", "Juniors"]] : []), f.age) +
+      segButtons("rec.period", [["all", "All time"], ["12m", "Last 12 months"], ["year", String(state.now.getFullYear())]], f.period) + "</div>" +
+      (f.age === "junior" ? '<div class="controls-row">' + segButtons("rec.jage", ages.map(function (a) { return [a, a === "Junior" ? "Age not given" : "Under " + a.slice(1)]; }), f.jage) + "</div>" : "");
     if (!rows.length) {
       html += '<p class="muted">No ' + f.loc + " " + f.bow.toLowerCase() + " scores for this selection.</p></div>";
       return html;
@@ -1270,7 +1281,7 @@
       const open = f.open === r.key;
       html += '<tr class="rec-row' + (open ? " open" : "") + '"><td><button type="button" class="linkish rec-toggle" data-hist="' + escapeHtml(r.key) + '" aria-expanded="' + open + '" title="Show record history">' + escapeHtml(r.label) + "</button>" + (e.code ? "" : ' <span class="muted small" title="Not in the Archery GB round list">(club)</span>') +
         '</td><td class="num"><strong>' + e.score + "</strong>" + (isNew ? ' <span class="badge ev ev-record">NEW</span>' : "") +
-        "</td><td>" + nameCell(e.member) + (f.gender === "all" ? ' <span class="muted small">' + (e.gender2 === "Women" ? "W" : "M") + (e.ageGroup === "50+" ? " 50+" : "") + "</span>" : "") +
+        "</td><td>" + nameCell(e.member, e) + (f.gender === "all" ? ' <span class="muted small">' + (e.gender2 === "Women" ? "W" : "M") + (e.ageGroup === "50+" && !e.member.junior ? " 50+" : "") + "</span>" : "") +
         (e.member.withheld ? "" : ' <button type="button" class="linkish small no-print" data-cert="' + idx + '" title="Print a record certificate">Certificate</button>') +
         '</td><td class="nowrap">' + fmtDate(e.date) + '</td><td class="num">' + (e.hcRound !== null ? e.hcRound : "-") + "</td><td>" +
         r.top.slice(1).map(function (x) { return escapeHtml(x.member.name) + " " + x.score; }).join('<span class="muted"> · </span>') +
@@ -1725,7 +1736,7 @@
     const optin = state.privacy.mode === "optin";
     let html = '<div class="card"><h2>Privacy</h2>' +
       '<p class="card-note">This site shows club records, classifications, handicaps and 252 badges for adult members, read from the record keeper\'s score sheets. ' +
-      "It only reads those sheets and never changes them. Junior members and junior scores are never shown. " +
+      "It only reads those sheets and never changes them. For safeguarding, juniors are never named: their scores count towards club records (including junior age-group records) and the leagues, where they show only as \"" + JUNIOR + "\" with their age group, and they are left off every other page. " +
       "A copy is kept in your own browser so the page works offline. The only things sent anywhere are requests made with the form below and anonymous visit counts (Google Analytics, without names or scores).</p>" +
       '<p class="card-note">' + (optin
         ? "Members are only named on this site if they have agreed to it. Everyone else is left off the stats, recent, classification, handicap and 252 badge pages, and any club record they hold shows as \"" + WITHHELD + "\"."
@@ -1795,7 +1806,7 @@
       a.data = res;
       // In service mode the admin copy includes every name, for the lists and
       // checks; it stays in memory and names are removed before caching.
-      if (Array.isArray(res.archers)) state.memRaw = res.archers.map(function (x) { return { id: x.k, name: x.name, rows: x.rows }; });
+      if (Array.isArray(res.archers)) state.memRaw = res.archers.map(function (x) { return { id: x.k, name: x.junior ? null : x.name, junior: !!x.junior, rows: x.rows }; });
       a.email = res.email || a.email;
       if (res.status) setPrivacy(res.status);
       return refreshShown().then(function () { setStatus(statusText("settings saved")); });
@@ -1812,7 +1823,7 @@
   function adminMembers() {
     const people = {};
     ((state.admin && state.admin.data && state.admin.data.people) || []).forEach(function (p) { people[normName(p.name)] = p; });
-    const rows = state.memRaw.map(function (r) {
+    const rows = state.memRaw.filter(function (r) { return !r.junior; }).map(function (r) {
       const entries = r.rows ? r.rows.map(function (x) { return parseDate(x[0]); }).filter(Boolean) : [];
       const last = entries.length ? new Date(Math.max.apply(null, entries)) : null;
       const p = r.name ? people[normName(r.name)] : null;
@@ -1993,8 +2004,20 @@
 
   function recordKey(e) { return roundKey(e) + "|" + e.bucket + "|" + e.gender2 + "|" + e.loc; }
 
-  function nameCell(m) {
+  function nameCell(m, e) {
+    if (m.junior) return '<span class="muted">' + JUNIOR + (e && /^U\d/.test(e.ageGroup) ? ", " + ageLabel(e.ageGroup) : "") + "</span>";
     return m.withheld ? '<span class="muted">' + WITHHELD + "</span>" : escapeHtml(m.name);
+  }
+  function juniorAgeOk(e, f) {
+    if (f.age === "50") return !e.member.junior && e.ageGroup === "50+";
+    if (f.age === "junior") return e.member.junior && e.ageGroup === f.jage;
+    return true;
+  }
+  const JUNIOR_AGES = ["U21", "U18", "U16", "U15", "U14", "U12", "Junior"];
+  function juniorAges() {
+    const have = {};
+    state.entries.forEach(function (e) { if (e.member.junior) have[e.ageGroup] = true; });
+    return JUNIOR_AGES.filter(function (a) { return have[a]; });
   }
 
   // Latest running handicap per visible archer and bow type, within 12 months.
@@ -2058,7 +2081,7 @@
       risk.slice(0, 15).forEach(function (r) {
         const reach = r.c.predicted !== null && r.c.predicted > r.rec.score;
         html += "<tr><td>" + escapeHtml(roundLabel(roundKey(r.rec), r.rec)) + '</td><td class="nowrap">' + bowDot(r.rec.bucket) + escapeHtml(categoryLabel(r.rec)) +
-          '</td><td class="num"><strong>' + r.rec.score + "</strong></td><td>" + nameCell(r.rec.member) + "</td><td>" + escapeHtml(r.c.m.name) +
+          '</td><td class="num"><strong>' + r.rec.score + "</strong></td><td>" + nameCell(r.rec.member, r.rec) + "</td><td>" + escapeHtml(r.c.m.name) +
           (reach ? ' <span class="badge ev ev-record">WITHIN REACH</span>' : "") + '</td><td class="num">' +
           (r.c.recent ? r.c.recent.score + ' <span class="muted small">(' + (r.rec.score - r.c.recent.score > 0 ? "-" + (r.rec.score - r.c.recent.score) : "+" + (r.c.recent.score - r.rec.score)) + ")</span>" : "-") +
           '</td><td class="num">' + (r.c.predicted !== null ? r.c.predicted : "-") + '</td><td class="num">' + (r.lgap === null ? "-" : r.lgap <= 0 ? '<span class="status-good">' + r.lgap.toFixed(1) + "</span>" : "<strong>" + r.lgap.toFixed(1) + "</strong>") + '</td><td class="num muted">' + (r.gap <= 0 ? '<span class="status-good">' + r.gap + "</span>" : r.gap) + "</td></tr>";
@@ -2076,7 +2099,7 @@
       html += '<div class="table-wide-scroll"><table><thead><tr><th>Round</th><th>Category</th><th class="num">Record</th><th class="num">Level</th><th class="num">Hcp</th><th>Held by</th><th>Since</th></tr></thead><tbody>';
       soft.forEach(function (e) {
         html += "<tr><td>" + escapeHtml(roundLabel(roundKey(e), e)) + '</td><td class="nowrap">' + bowDot(e.bucket) + escapeHtml(categoryLabel(e)) + '</td><td class="num">' + e.score +
-          '</td><td class="num nowrap">' + levelCell(recordLevel(e), e.loc) + '</td><td class="num muted">' + hcOf(e) + "</td><td>" + nameCell(e.member) + '</td><td class="nowrap">' + fmtDate(e.date) + "</td></tr>";
+          '</td><td class="num nowrap">' + levelCell(recordLevel(e), e.loc) + '</td><td class="num muted">' + hcOf(e) + "</td><td>" + nameCell(e.member, e) + '</td><td class="nowrap">' + fmtDate(e.date) + "</td></tr>";
       });
       html += "</tbody></table></div>";
     }
@@ -2121,7 +2144,7 @@
     const list = state.entries.filter(function (e) {
       if (!e.round || e.score === null || e.isLadder || e.bucket !== f.bow || e.loc !== f.loc || roundKey(e) !== key) return false;
       if (f.gender !== "all" && e.gender2 !== f.gender) return false;
-      if (f.age === "50" && e.ageGroup !== "50+") return false;
+      if (!juniorAgeOk(e, f)) return false;
       return true;
     }).sort(function (a, b) { return a.date - b.date; });
     const steps = [];
@@ -2135,7 +2158,7 @@
     return '<div class="history"><strong>Record history</strong><ol>' + steps.map(function (e, i) {
       const next = steps[i - 1];
       const stood = Math.round(((next ? next.date : state.now) - e.date) / 864e5);
-      return "<li><span class=\"num\">" + e.score + "</span> " + nameCell(e.member) + ' <span class="muted small">' + fmtDate(e.date) +
+      return "<li><span class=\"num\">" + e.score + "</span> " + nameCell(e.member, e) + ' <span class="muted small">' + fmtDate(e.date) +
         " · stood " + (stood >= 365 ? (Math.round(stood / 36.5) / 10) + " years" : stood + " days") + (next ? "" : " so far") + "</span></li>";
     }).join("") + "</ol></div>";
   }
@@ -2188,6 +2211,7 @@
   // the last Sunday of March (clocks forward), both days included.
   function winterRange(year) { return { from: lastSunday(year, 9), to: lastSunday(year + 1, 2) }; }
   function winterOf(date) {
+    date = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     const y = date.getMonth() >= 6 ? date.getFullYear() : date.getFullYear() - 1;
     const r = winterRange(y);
     return date >= r.from && date <= r.to ? y : null;
@@ -2198,23 +2222,44 @@
     { key: "frostbite", name: "Frostbite league", rounds: ["frostbite"] },
     { key: "portsmouth", name: "Portsmouth league", rounds: ["portsmouth"] },
     { key: "worcester", name: "Worcester league", rounds: ["worcester", "worcester_5_centre"] },
-    { key: "vegas", name: "Vegas league", rounds: ["vegas", "vegas_300"] },
+    { key: "vegas", name: "Vegas league", rounds: ["vegas"] },
     { key: "wa18", name: "WA 18m league", rounds: ["wa18"] }
   ];
   const QUIVER_ROUNDS = [["Portsmouth", "portsmouth"], ["Worcester", "worcester"], ["Vegas", "vegas"], ["WA 18m", "wa18"]];
 
-  function officialSeason() {
-    const ends = (state.leagues || []).map(function (l) { return parseDate(l.end); }).filter(Boolean);
-    if (!ends.length) return null;
-    const end = new Date(Math.max.apply(null, ends));
-    return end.getMonth() >= 6 ? end.getFullYear() : end.getFullYear() - 1;
+  // Bow-type adjustment for the leagues, so every bow competes on level
+  // terms. The club converts each score through a cubic curve on the score as
+  // a percentage of the round's maximum: adjusted = max / 100 * g(100 * score / max),
+  // g(x) = a x^3 + b x^2 + c x. Recurve is unchanged. Barebow indoors and
+  // compound and longbow on the Frostbite reproduce the club's league sheets
+  // exactly; the rest are fitted to the 2025/26 league tables.
+  const LEAGUE_CONV = {
+    frostbite: {
+      Barebow: [5.47842e-5, -0.014822, 1.93319],
+      Longbow: [1.32620e-4, -0.0296572, 2.6495],
+      Compound: [0, 0.00807984, 0.19923],
+      Other: [1.06269e-4, -0.0248998, 2.42729]
+    },
+    indoor: {
+      Barebow: [5.4159e-5, -0.0147293, 1.93017],
+      Longbow: [1.30454e-4, -0.0293236, 2.6378],
+      Compound: [0, 0.00807984, 0.19923],
+      Other: [1.06269e-4, -0.0248998, 2.42729]
+    }
+  };
+  function leagueAdjust(leagueKey, bow, score, max) {
+    if (bow === "Recurve" || !max) return score;
+    const group = LEAGUE_CONV[leagueKey === "frostbite" ? "frostbite" : "indoor"];
+    const co = group[bow] || group.Other;
+    const x = 100 * score / max;
+    return max / 100 * (co[0] * x * x * x + co[1] * x * x + co[2] * x);
   }
 
   function leagueSeasons() {
     const ys = {};
-    state.visible.forEach(function (e) { const w = winterOf(e.date); if (w !== null && e.code) ys[w] = true; });
-    const off = officialSeason();
-    if (off !== null) ys[off] = true;
+    state.entries.forEach(function (e) { const w = winterOf(e.date); if (w !== null && e.code) ys[w] = true; });
+    const cur = winterOf(state.now);
+    if (cur !== null) ys[cur] = true;
     return Object.keys(ys).map(Number).sort(function (a, b) { return b - a; });
   }
 
@@ -2223,87 +2268,99 @@
     return rows.map(function (r, i) { const v = valueFn(r); if (v !== prev) { pos = i + 1; prev = v; } return pos; });
   }
 
-  function leagueName(r) { return r.withheld || !r.name ? '<span class="muted">' + WITHHELD + "</span>" : escapeHtml(r.name); }
+  function leagueRoundOf(e) { return e.code ? e.code.replace(/_compound|_triple/g, "") : null; }
+  function inWinter(e, year) { return winterOf(e.date) === year; }
 
-  function officialLeagueCard(l) {
-    let html = '<div class="card league"><div class="card-head"><div><h2>' + escapeHtml(l.name) + '</h2><p class="card-note">' +
-      (l.kind === "handicap"
-        ? "Handicap-adjusted scores (score plus handicap allowance) on each of the four rounds, added together."
-        : "Best single score, adjusted for bow type so every bow competes on level terms. Badge is the league badge level reached.") +
-      (l.end ? " Season ends " + fmtDate(parseDate(l.end)) + "." : "") + "</p></div></div>";
-    if (l.state === "error") return html + '<p class="status-warn">Couldn\'t read this league table.</p></div>';
-    if (!l.rows.length) return html + '<p class="muted small">No scores yet.</p></div>';
-    const rows = l.rows.slice().sort(function (a, b) { return b.final - a.final; });
-    const pos = positions(rows, function (r) { return r.final; });
-    if (l.kind === "handicap") {
-      const names = l.rounds || ["Round 1", "Round 2", "Round 3", "Round 4"];
-      html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">Pos</th><th>Archer</th>' + names.map(function (n) { return '<th class="num">' + escapeHtml(n) + "</th>"; }).join("") +
-        '<th class="num">Total</th></tr></thead><tbody>';
-      rows.forEach(function (r, i) {
-        html += '<tr><td class="num">' + pos[i] + "</td><td>" + leagueName(r) + "</td>" + names.map(function (n, j) {
-          const c = (r.rounds || [])[j];
-          return '<td class="num">' + (c && c.adj ? (c.bow ? bowDot(c.bow) : "") + c.adj : '<span class="muted">-</span>') + "</td>";
-        }).join("") + '<td class="num"><strong>' + r.final + "</strong></td></tr>";
-      });
-    } else {
-      html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">Pos</th><th>Archer</th><th>Bow</th><th class="num">Score</th><th class="num">Adjusted</th><th class="num">Badge</th><th>Other bows</th></tr></thead><tbody>';
-      rows.forEach(function (r, i) {
-        const best = (r.entries || [])[0] || {};
-        html += '<tr><td class="num">' + pos[i] + "</td><td>" + leagueName(r) + '</td><td class="nowrap">' + (best.bow ? bowDot(best.bow) + best.bow : "-") +
-          '</td><td class="num">' + (best.score || "-") + '</td><td class="num"><strong>' + r.final + '</strong></td><td class="num">' + (best.badge || "-") + '</td><td class="muted small">' +
-          (r.entries || []).slice(1).map(function (e) { return e.bow + " " + e.score + (e.adjusted !== e.score ? " (" + Math.round(e.adjusted) + ")" : ""); }).join(", ") + "</td></tr>";
-      });
-    }
+  // One row per archer: their best adjusted score in the season across the
+  // bow types they shot, with their other bows alongside.
+  function leagueTable(def, year) {
+    const by = {};
+    state.entries.forEach(function (e) {
+      if (e.score === null || def.rounds.indexOf(leagueRoundOf(e)) === -1 || !inWinter(e, year)) return;
+      const info = AGB.round(e.code);
+      const adj = leagueAdjust(def.key, e.bucket, e.score, info ? info.max : null);
+      const m = (by[e.member.id] = by[e.member.id] || { m: e.member, bows: {} });
+      const cur = m.bows[e.bucket];
+      if (!cur || adj > cur.adj || (adj === cur.adj && e.date < cur.e.date)) m.bows[e.bucket] = { e: e, adj: adj };
+    });
+    return Object.keys(by).map(function (k) {
+      const x = by[k];
+      x.entries = Object.keys(x.bows).map(function (b) { return x.bows[b]; }).sort(function (a, b) { return b.adj - a.adj; });
+      x.best = x.entries[0];
+      return x;
+    }).sort(function (a, b) { return b.best.adj - a.best.adj || a.best.e.date - b.best.e.date; });
+  }
+
+  function leagueCard(def, year) {
+    const rows = leagueTable(def, year);
+    let html = '<div class="card league"><h2>' + escapeHtml(def.name) + '</h2><p class="card-note">Best single score in the season, adjusted for bow type so every bow competes on level terms (recurve scores are unchanged).</p>';
+    if (!rows.length) return html + '<p class="muted small">No scores yet this season.</p></div>';
+    const pos = positions(rows, function (r) { return Math.round(r.best.adj * 10); });
+    html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">Pos</th><th>Archer</th><th>Bow</th><th class="num">Score</th><th class="num">Adjusted</th><th>Date</th><th>Other bows</th></tr></thead><tbody>';
+    rows.forEach(function (r, i) {
+      const b = r.best;
+      html += '<tr><td class="num">' + pos[i] + "</td><td>" + nameCell(r.m, b.e) + '</td><td class="nowrap">' + bowDot(b.e.bucket) + b.e.bucket +
+        '</td><td class="num">' + b.e.score + '</td><td class="num"><strong>' + b.adj.toFixed(1) + '</strong></td><td class="nowrap muted small">' + fmtDate(b.e.date) +
+        '</td><td class="muted small">' + r.entries.slice(1).map(function (o) { return o.e.bucket + " " + o.e.score + (o.e.bucket !== "Recurve" ? " (" + o.adj.toFixed(1) + ")" : ""); }).join(", ") + "</td></tr>";
+    });
     return html + "</tbody></table></div></div>";
   }
 
-  // Past seasons, worked out from members' score sheets. The bow-type
-  // adjustment lives in the league sheets, so here each bow type is ranked
-  // on its own by best single score.
-  function computedLeagueCard(def, year) {
-    const r = winterRange(year);
-    const by = {};
-    state.visible.forEach(function (e) {
-      if (e.score === null || !e.code || def.rounds.indexOf(e.code.replace(/_compound|_triple/g, "")) === -1 || e.date < r.from || e.date > r.to) return;
-      const k = e.bucket + "|" + e.member.id;
-      if (!by[k] || e.score > by[k].score) by[k] = e;
-    });
-    const list = Object.keys(by).map(function (k) { return by[k]; });
-    let html = '<div class="card league"><h2>' + escapeHtml(def.name) + '</h2><p class="card-note">Best single score in the season, from members\' score sheets, ranked within each bow type.</p>';
-    if (!list.length) return html + '<p class="muted small">No scores this season.</p></div>';
-    DISCIPLINE_ORDER.forEach(function (b) {
-      const rows = list.filter(function (e) { return e.bucket === b; }).sort(function (x, y) { return y.score - x.score || x.date - y.date; });
-      if (!rows.length) return;
-      const pos = positions(rows, function (e) { return e.score; });
-      html += "<h3>" + bowDot(b) + b + '</h3><table class="compact"><tbody>' + rows.map(function (e, i) {
-        return '<tr><td class="num" style="width:2.5em">' + pos[i] + "</td><td>" + escapeHtml(e.member.name) + '</td><td class="num"><strong>' + e.score + '</strong></td><td class="nowrap muted small">' + fmtDate(e.date) + "</td></tr>";
-      }).join("") + "</tbody></table>";
-    });
-    return html + "</div>";
+  // Quiver Shiver: for each round, the archer's best score in the season plus
+  // the Archery GB handicap allowance (1440 minus the score their handicap
+  // predicts on that round) at their handicap for that bow at the end of the
+  // season, or today while the season is running. Each round uses the bow the
+  // archer shot it with most often that season.
+  function handicapAt(m, bow, when) {
+    const list = (m.byBow[bow] || []).filter(function (e) { return e.hcRunning !== null && e.date <= when; });
+    return list.length ? list[list.length - 1].hcRunning : null;
   }
-
-  function computedQuiverCard(year) {
+  function quiverTable(year) {
     const r = winterRange(year);
+    const when = r.to < state.now ? r.to : state.now;
+    const whenEnd = new Date(when.getFullYear(), when.getMonth(), when.getDate(), 23, 59);
     const by = {};
-    state.visible.forEach(function (e) {
-      if (e.hcAdjusted === null || !e.code || e.date < r.from || e.date > r.to) return;
-      const idx = QUIVER_ROUNDS.findIndex(function (q) { return e.code.replace(/_compound|_triple/g, "") === q[1]; });
+    state.entries.forEach(function (e) {
+      if (e.score === null || !e.code || !inWinter(e, year)) return;
+      const idx = QUIVER_ROUNDS.findIndex(function (q) { return leagueRoundOf(e) === q[1]; });
       if (idx === -1) return;
       const k = e.member.id;
-      by[k] = by[k] || { m: e.member, best: [null, null, null, null] };
-      if (!by[k].best[idx] || e.hcAdjusted > by[k].best[idx].hcAdjusted) by[k].best[idx] = e;
+      by[k] = by[k] || { m: e.member, shots: [{}, {}, {}, {}] };
+      (by[k].shots[idx][e.bucket] = by[k].shots[idx][e.bucket] || []).push(e);
     });
-    const rows = Object.keys(by).map(function (k) {
+    return Object.keys(by).map(function (k) {
       const x = by[k];
-      x.total = x.best.reduce(function (s, e) { return s + (e ? e.hcAdjusted : 0); }, 0);
+      x.best = x.shots.map(function (perBow) {
+        let pick = null;
+        Object.keys(perBow).forEach(function (bow) {
+          const list = perBow[bow];
+          const top = list.reduce(function (a, b) { return b.score > a.score ? b : a; });
+          const h = handicapAt(x.m, bow, whenEnd);
+          const info = AGB.round(top.code);
+          let adj = null;
+          if (h !== null && info && info.table) {
+            const hi = Math.max(0, Math.min(info.table.length - 1, Math.round(h)));
+            adj = top.score + 1440 - info.table[hi];
+          } else if (top.hcAdjusted !== null) adj = top.hcAdjusted;
+          if (adj === null) return;
+          const c = { e: top, bow: bow, n: list.length, adj: adj };
+          if (!pick || c.n > pick.n || (c.n === pick.n && c.adj > pick.adj)) pick = c;
+        });
+        return pick;
+      });
+      x.total = x.best.reduce(function (s, c) { return s + (c ? c.adj : 0); }, 0);
       x.count = x.best.filter(Boolean).length;
       return x;
-    }).sort(function (a, b) { return b.count - a.count || b.total - a.total; });
-    let html = '<div class="card league"><h2>Quiver Shiver</h2><p class="card-note">Best handicap-adjusted score on each of the four rounds in the season, added together, from members\' score sheets. Archers who shot all four rounds are listed first.</p>';
-    if (!rows.length) return html + '<p class="muted small">No scores this season.</p></div>';
+    }).filter(function (x) { return x.count > 0; }).sort(function (a, b) { return b.count - a.count || b.total - a.total; });
+  }
+
+  function quiverCard(year) {
+    const rows = quiverTable(year);
+    let html = '<div class="card league"><h2>Quiver Shiver</h2><p class="card-note">Handicap adjusted: the best score on each of the four rounds plus the handicap allowance at the archer\'s handicap for that bow at the end of the season (their current handicap while the season is running), added together. Archers who have shot all four rounds are listed first.</p>';
+    if (!rows.length) return html + '<p class="muted small">No scores yet this season.</p></div>';
     html += '<div class="table-wide-scroll"><table><thead><tr><th>Archer</th>' + QUIVER_ROUNDS.map(function (q) { return '<th class="num">' + q[0] + "</th>"; }).join("") + '<th class="num">Total</th></tr></thead><tbody>';
     rows.forEach(function (x) {
-      html += "<tr><td>" + escapeHtml(x.m.name) + "</td>" + x.best.map(function (e) { return '<td class="num">' + (e ? bowDot(e.bucket) + e.hcAdjusted : '<span class="muted">-</span>') + "</td>"; }).join("") +
+      html += "<tr><td>" + nameCell(x.m, (x.best.filter(Boolean)[0] || {}).e) + "</td>" + x.best.map(function (c) { return '<td class="num">' + (c ? '<span title="' + c.bow + " " + c.e.score + '">' + bowDot(c.bow) + c.adj + "</span>" : '<span class="muted">-</span>') + "</td>"; }).join("") +
         '<td class="num"><strong>' + x.total + "</strong>" + (x.count < 4 ? ' <span class="muted small">(' + x.count + "/4)</span>" : "") + "</td></tr>";
     });
     return html + "</tbody></table></div></div>";
@@ -2311,33 +2368,35 @@
 
   function buildLeagues() {
     const seasons = leagueSeasons();
-    const official = officialSeason();
-    let html = '<div class="card"><h2>Leagues</h2><p class="card-note">The club\'s winter leagues run from when the clocks go back to when they go forward. ' +
-      "The current season shows the official league tables kept by the record keeper; earlier seasons are worked out from members' score sheets.</p>";
+    const current = winterOf(state.now);
+    let html = '<div class="card"><h2>Leagues</h2><p class="card-note">The club\'s winter leagues run from when the clocks go back to when they go forward, worked out from members\' score sheets. ' +
+      "Each league takes an archer's best single score in the season, adjusted for bow type; the Quiver Shiver adds up the best handicap-adjusted score on each of its four rounds. " +
+      "Juniors take part but, for safeguarding, are never named.</p>";
     if (!seasons.length) return html + '<p class="muted">No league scores yet.</p></div>';
-    if (seasons.indexOf(state.league.season) === -1) state.league.season = official !== null ? official : seasons[0];
+    if (seasons.indexOf(state.league.season) === -1) state.league.season = seasons[0];
     const y = state.league.season;
     const range = winterRange(y);
+    const next = current === null ? winterRange(state.now.getMonth() >= 6 ? state.now.getFullYear() : state.now.getFullYear() - 1) : null;
     html += '<div class="controls-row"><label class="ctl">Season <select data-league-season>' + seasons.map(function (s) {
-      return '<option value="' + s + '"' + (s === y ? " selected" : "") + ">" + winterLabel(s) + (s === official ? " (official tables)" : "") + "</option>";
-    }).join("") + '</select></label><span class="muted small">' + fmtDate(range.from) + " to " + fmtDate(range.to) + "</span></div></div>";
-    if (y === official) {
-      html += '<div class="league-grid">' + state.leagues.map(officialLeagueCard).join("") + "</div>";
-    } else {
-      html += '<div class="league-grid">' + LEAGUE_ROUNDS.map(function (d) { return computedLeagueCard(d, y); }).join("") + computedQuiverCard(y) + "</div>";
-    }
+      return '<option value="' + s + '"' + (s === y ? " selected" : "") + ">" + winterLabel(s) + (s === current ? " (current)" : "") + "</option>";
+    }).join("") + '</select></label><span class="muted small">' + fmtDate(range.from) + " to " + fmtDate(range.to) +
+      (next && next.from > state.now ? " · next season starts " + fmtDate(next.from) : "") + "</span></div></div>";
+    html += '<div class="league-grid">' + LEAGUE_ROUNDS.map(function (d) { return leagueCard(d, y); }).join("") + quiverCard(y) + "</div>";
     return html;
   }
 
-  // League winners for the Awards page, when the official tables fall in the period.
+  // League winners for the Awards page: seasons that finished in the period.
   function leagueWinners(inPeriod) {
     const out = [];
-    (state.leagues || []).forEach(function (l) {
-      const end = parseDate(l.end);
-      if (!end || !inPeriod(end) || !l.rows.length) return;
-      const best = l.rows.slice().sort(function (a, b) { return b.final - a.final; })[0];
-      if (best.withheld || !best.name) return;
-      out.push({ m: { name: best.name }, text: l.name + " (" + best.final + ")" });
+    leagueSeasons().forEach(function (y) {
+      const end = winterRange(y).to;
+      if (end > state.now || !inPeriod(end)) return;
+      LEAGUE_ROUNDS.forEach(function (d) {
+        const t = leagueTable(d, y)[0];
+        if (t && !t.m.withheld) out.push({ m: t.m, text: d.name + " " + winterLabel(y).replace("Winter ", "") + " (" + t.best.e.bucket.toLowerCase() + " " + t.best.e.score + ", adjusted " + t.best.adj.toFixed(1) + ")" });
+      });
+      const q = quiverTable(y).filter(function (x) { return x.count === 4; })[0];
+      if (q && !q.m.withheld) out.push({ m: q.m, text: "Quiver Shiver " + winterLabel(y).replace("Winter ", "") + " (" + q.total + ")" });
     });
     return out;
   }
@@ -2512,7 +2571,7 @@
     if (!sheets) return "";
     const counts = countBy(sheets, function (s) { return s.state; });
     let html = '<div class="card"><h2>Member sheets</h2><p class="card-note">The sheets the site reads (read only) from the record keeper\'s folder. ' +
-      "Junior sheets are skipped completely and their names are never stored. " +
+      "Junior names are never stored or shown: junior scores are kept only as anonymous \"" + JUNIOR + "\" entries (no name, no comments), separate from any adult scores in the same sheet. " +
       (a.data.built ? "Last read " + fmtDate(new Date(a.data.built)) + " " + new Date(a.data.built).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) + "; " : "") +
       "the site re-reads them every hour.</p>" +
       '<p class="small">' + ["ok", "junior", "empty", "error"].filter(function (k) { return counts[k]; }).map(function (k) {
@@ -2665,7 +2724,7 @@
       window[cb] = function (res) {
         clearTimeout(timer);
         if (!res || !res.ok || !Array.isArray(res.archers)) { finish({ raw: [], failed: 1 }); return; }
-        finish({ raw: res.archers.map(function (x) { return { id: x.k, name: x.withheld ? null : x.name, withheld: !!x.withheld, rows: x.rows || [] }; }), failed: 0, leagues: Array.isArray(res.leagues) ? res.leagues : [] });
+        finish({ raw: res.archers.map(function (x) { return { id: x.k, name: x.withheld || x.junior ? null : x.name, withheld: !!x.withheld || !!x.junior, junior: !!x.junior, rows: x.rows || [] }; }), failed: 0, leagues: Array.isArray(res.leagues) ? res.leagues : [] });
       };
       script.onerror = function () { clearTimeout(timer); finish({ raw: [], failed: 1 }); };
       script.src = SERVICE_URL + (SERVICE_URL.indexOf("?") === -1 ? "?" : "&") + "action=data&callback=" + cb;
