@@ -369,7 +369,7 @@
 
   <footer>
     A read-only view of the club record keeper's score sheets, refreshed on each visit; the last copy is kept in your browser so the page works offline.
-    Junior scores count towards club records and leagues, but juniors are never named.<br>
+    Junior scores count towards club records and leagues; archers under 18 are never named.<br>
     Handicaps and classifications use the Archery GB 2023 scheme (older scores keep the handicaps recorded at the time). Classification scores come from
     <a href="https://github.com/jatkinson1000/archery-utils" target="_blank" rel="noopener">archeryutils</a>. Spotted a mistake? Tell the record keeper; this page only reads the sheets.<br>
     <a href="#privacy">Privacy</a> · <a href="#admin">Site admin</a>
@@ -1141,10 +1141,10 @@
     return Promise.all(raw.map(function (r) {
       if (!r) return null;
       if (r.junior) return { id: r.id, rows: r.rows, name: null, withheld: true, junior: true };
-      if (!r.name) return { id: r.id, rows: r.rows, name: null, withheld: true };
+      if (!r.name) return { id: r.id, rows: r.rows, name: null, withheld: true, grown: !!r.grown };
       return sha256(normName(r.name)).then(function (h) {
         const hide = isHidden(h);
-        return { id: r.id, rows: r.rows, name: hide ? null : r.name, withheld: hide };
+        return { id: r.id, rows: r.rows, name: hide ? null : r.name, withheld: hide, grown: !!r.grown };
       });
     })).then(function (list) { return list.filter(Boolean); });
   }
@@ -1157,8 +1157,10 @@
       if (!entries.length) return;
       // Juniors only come from the privacy service, already separated from
       // adults and without names; anything junior in a named sheet is dropped.
-      const isJ = !!r.junior;
-      if (!isJ && isJuniorCategory(entries[entries.length - 1].category)) return;
+      // "grown": the service has confirmed the archer is now 18 or over, so
+      // the scores they shot as a junior are shown under their name too.
+      const isJ = !!r.junior, keepJunior = isJ || !!r.grown;
+      if (!keepJunior && isJuniorCategory(entries[entries.length - 1].category)) return;
       // Some scores are entered twice under old and new category names
       // ("Gentlemen" and "Male Senior"): count them once, keeping the newer
       // category (it says whether the archer was 50+).
@@ -1170,7 +1172,7 @@
         if (!prev || (prev.category !== e.category && legacy(prev.category) && !legacy(e.category))) keep[k] = e;
       });
       const adult = entries.filter(function (e) {
-        if (!isJ && isJuniorCategory(e.category)) return false;
+        if (!keepJunior && isJuniorCategory(e.category)) return false;
         const k = dupKey(e);
         return keep[k] === e || keep[k].category === e.category;
       });
@@ -1184,7 +1186,7 @@
           if (e.classDerived) { e.classRank = -1; e.classification = null; e.classDerived = false; }
         }
       });
-      if (isJ) adult.forEach(function (e) { if (!/^U\d/.test(e.ageGroup)) e.ageGroup = "Junior"; });
+      adult.forEach(function (e) { if ((isJ || isJuniorCategory(e.category)) && !/^U\d/.test(e.ageGroup)) e.ageGroup = "Junior"; });
       const m = { id: r.id, name: isJ ? JUNIOR : r.withheld ? WITHHELD : (r.name || "Unnamed archer"), withheld: isJ || !!r.withheld, junior: isJ, entries: adult };
       adult.forEach(function (e) { e.member = m; e.gender2 = genderOf(e.category); });
       const byBow = {};
@@ -1257,7 +1259,7 @@
     if (f.age === "junior" && ages.indexOf(f.jage) === -1) f.jage = ages[0];
     const rows = recordRows(f);
     let html = '<div class="card"><h2>Club records</h2><p class="card-note">Best score on each round, from the record keeper\'s sheets. ' +
-      "Juniors can hold club records and have their own age-group records under Juniors; for safeguarding they are never named, and show as \"" + JUNIOR + "\". " +
+      "Juniors can hold club records and have their own age-group records under Juniors. For safeguarding, archers under 18 are never named and show as \"" + JUNIOR + "\"; once they reach 18 their records, including those set as a junior, show their name. " +
       "Triple-face and single-face versions of a round are counted together. 252 practice rounds are on the 252 badges tab. Click a round to see its record history. " +
       '<span class="badge ev ev-record">NEW</span> marks a record set in the last ' + NEW_RECORD_DAYS + " days.</p>";
     html += '<div class="controls-row">' +
@@ -1281,7 +1283,7 @@
       const open = f.open === r.key;
       html += '<tr class="rec-row' + (open ? " open" : "") + '"><td><button type="button" class="linkish rec-toggle" data-hist="' + escapeHtml(r.key) + '" aria-expanded="' + open + '" title="Show record history">' + escapeHtml(r.label) + "</button>" + (e.code ? "" : ' <span class="muted small" title="Not in the Archery GB round list">(club)</span>') +
         '</td><td class="num"><strong>' + e.score + "</strong>" + (isNew ? ' <span class="badge ev ev-record">NEW</span>' : "") +
-        "</td><td>" + nameCell(e.member, e) + (f.gender === "all" ? ' <span class="muted small">' + (e.gender2 === "Women" ? "W" : "M") + (e.ageGroup === "50+" && !e.member.junior ? " 50+" : "") + "</span>" : "") +
+        "</td><td>" + nameCell(e.member, e) + (f.gender === "all" ? ' <span class="muted small">' + (e.gender2 === "Women" ? "W" : "M") + (e.ageGroup === "50+" && !e.member.junior ? " 50+" : "") + (!e.member.junior && /^U\d/.test(e.ageGroup) ? " " + e.ageGroup : "") + "</span>" : "") +
         (e.member.withheld ? "" : ' <button type="button" class="linkish small no-print" data-cert="' + idx + '" title="Print a record certificate">Certificate</button>') +
         '</td><td class="nowrap">' + fmtDate(e.date) + '</td><td class="num">' + (e.hcRound !== null ? e.hcRound : "-") + "</td><td>" +
         r.top.slice(1).map(function (x) { return escapeHtml(x.member.name) + " " + x.score; }).join('<span class="muted"> · </span>') +
@@ -1736,7 +1738,7 @@
     const optin = state.privacy.mode === "optin";
     let html = '<div class="card"><h2>Privacy</h2>' +
       '<p class="card-note">This site shows club records, classifications, handicaps and 252 badges for adult members, read from the record keeper\'s score sheets. ' +
-      "It only reads those sheets and never changes them. For safeguarding, juniors are never named: their scores count towards club records (including junior age-group records) and the leagues, where they show only as \"" + JUNIOR + "\" with their age group, and they are left off every other page. " +
+      "It only reads those sheets and never changes them. For safeguarding, archers under 18 are never named: their scores count towards club records (including junior age-group records) and the leagues, where they show only as \"" + JUNIOR + "\" with their age group, and they are left off every other page. Once an archer turns 18 (checked against their date of birth in the club's membership records) they are shown like any other adult member, including the records they set as a junior. " +
       "A copy is kept in your own browser so the page works offline. The only things sent anywhere are requests made with the form below and anonymous visit counts (Google Analytics, without names or scores).</p>" +
       '<p class="card-note">' + (optin
         ? "Members are only named on this site if they have agreed to it. Everyone else is left off the stats, recent, classification, handicap and 252 badge pages, and any club record they hold shows as \"" + WITHHELD + "\"."
@@ -1806,7 +1808,7 @@
       a.data = res;
       // In service mode the admin copy includes every name, for the lists and
       // checks; it stays in memory and names are removed before caching.
-      if (Array.isArray(res.archers)) state.memRaw = res.archers.map(function (x) { return { id: x.k, name: x.junior ? null : x.name, junior: !!x.junior, rows: x.rows }; });
+      if (Array.isArray(res.archers)) state.memRaw = res.archers.map(function (x) { return { id: x.k, name: x.junior ? null : x.name, junior: !!x.junior, grown: !!x.grown && !x.junior, rows: x.rows }; });
       a.email = res.email || a.email;
       if (res.status) setPrivacy(res.status);
       return refreshShown().then(function () { setStatus(statusText("settings saved")); });
@@ -2008,15 +2010,22 @@
     if (m.junior) return '<span class="muted">' + JUNIOR + (e && /^U\d/.test(e.ageGroup) ? ", " + ageLabel(e.ageGroup) : "") + "</span>";
     return m.withheld ? '<span class="muted">' + WITHHELD + "</span>" : escapeHtml(m.name);
   }
+  function ageLine(d) {
+    const sh = (d && d.sheets) || [], ag = d && d.ages;
+    if (!ag) return "";
+    if (!ag.ok) return '<span class="status-warn">The member export couldn\'t be read at the last update, so ages were judged by category only.</span> ';
+    const byDob = sh.filter(function (x) { return x.age === "dob"; }).length, byCat = sh.filter(function (x) { return x.age === "category"; }).length;
+    return byDob + " sheets matched to a date of birth; " + byCat + " judged by category (not found in the export). ";
+  }
   function juniorAgeOk(e, f) {
     if (f.age === "50") return !e.member.junior && e.ageGroup === "50+";
-    if (f.age === "junior") return e.member.junior && e.ageGroup === f.jage;
+    if (f.age === "junior") return e.ageGroup === f.jage;
     return true;
   }
   const JUNIOR_AGES = ["U21", "U18", "U16", "U15", "U14", "U12", "Junior"];
   function juniorAges() {
     const have = {};
-    state.entries.forEach(function (e) { if (e.member.junior) have[e.ageGroup] = true; });
+    state.entries.forEach(function (e) { if (JUNIOR_AGES.indexOf(e.ageGroup) !== -1) have[e.ageGroup] = true; });
     return JUNIOR_AGES.filter(function (a) { return have[a]; });
   }
 
@@ -2571,7 +2580,9 @@
     if (!sheets) return "";
     const counts = countBy(sheets, function (s) { return s.state; });
     let html = '<div class="card"><h2>Member sheets</h2><p class="card-note">The sheets the site reads (read only) from the record keeper\'s folder. ' +
-      "Junior names are never stored or shown: junior scores are kept only as anonymous \"" + JUNIOR + "\" entries (no name, no comments), separate from any adult scores in the same sheet. " +
+      "Under-18s' names are never stored or shown: their scores are kept only as anonymous \"" + JUNIOR + "\" entries (no name, no comments). " +
+      "Ages are checked against the date of birth in the Archery GB member export (member_list.xlsx), without storing it; archers not found there stay hidden unless their latest score is in an adult category. " +
+      ageLine(a.data) +
       (a.data.built ? "Last read " + fmtDate(new Date(a.data.built)) + " " + new Date(a.data.built).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) + "; " : "") +
       "the site re-reads them every hour.</p>" +
       '<p class="small">' + ["ok", "junior", "empty", "error"].filter(function (k) { return counts[k]; }).map(function (k) {
@@ -2724,7 +2735,7 @@
       window[cb] = function (res) {
         clearTimeout(timer);
         if (!res || !res.ok || !Array.isArray(res.archers)) { finish({ raw: [], failed: 1 }); return; }
-        finish({ raw: res.archers.map(function (x) { return { id: x.k, name: x.withheld || x.junior ? null : x.name, withheld: !!x.withheld || !!x.junior, junior: !!x.junior, rows: x.rows || [] }; }), failed: 0, leagues: Array.isArray(res.leagues) ? res.leagues : [] });
+        finish({ raw: res.archers.map(function (x) { return { id: x.k, name: x.withheld || x.junior ? null : x.name, withheld: !!x.withheld || !!x.junior, junior: !!x.junior, grown: !!x.grown && !x.junior, rows: x.rows || [] }; }), failed: 0, leagues: Array.isArray(res.leagues) ? res.leagues : [] });
       };
       script.onerror = function () { clearTimeout(timer); finish({ raw: [], failed: 1 }); };
       script.src = SERVICE_URL + (SERVICE_URL.indexOf("?") === -1 ? "?" : "&") + "action=data&callback=" + cb;
