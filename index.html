@@ -332,6 +332,15 @@
   td .seg button { padding: 4px 10px; }
   .seg button:disabled { cursor: default; opacity: 0.55; }
   .optout-form { display: flex; flex-direction: column; gap: 6px; max-width: 460px; }
+  .sub-form { max-width: 640px; }
+  .sub-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .sub-grid > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .sub-grid .span2 { grid-column: 1 / -1; }
+  @media (max-width: 560px) { .sub-grid { grid-template-columns: 1fr; } .sub-form input, .sub-form select, .sub-form textarea { font-size: 16px !important; } }
+  .sub-form input[type=email], .sub-form input[type=date], .sub-form input[type=number], .sub-form textarea, .sub-form select { width: 100%; padding: 8px 10px; font-size: 0.9rem; box-sizing: border-box; font-family: inherit; }
+  .sub-preview:not(:empty) { border-left: 3px solid var(--baseline); padding: 2px 10px; margin-top: 6px; }
+  .sub-preview p { margin: 4px 0; }
+  .hp { position: absolute; left: -5000px; width: 1px; height: 1px; opacity: 0; }
   .optout-form label { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); }
   .optout-form label.check { font-weight: 400; display: flex; gap: 8px; align-items: flex-start; margin-top: 6px; }
   .optout-form label.check input { margin-top: 3px; }
@@ -1132,6 +1141,7 @@
     honours: { season: null, bow: "all" },
     hcp: { bow: "all", sort: "hcp", period: "12m" },
     pred: { hc: 50, bow: "Recurve", gender: "Open", age: "Adult", scope: "club" },
+    sub: { bow: "Recurve", gender: "Men", age: "Adult" },
     badges: { bow: "all" },
     stats: { loc: "all", bow: "all", period: "all" },
     chal: { loc: "all", bow: "all" },
@@ -2855,6 +2865,132 @@
   }
 
   // =====================================================================
+  // Submit a score (sent to the record keeper by email)
+  // =====================================================================
+  const SUB_AGES = [["Adult", "Senior"], ["50+", "50+"], ["U21", "Under 21"], ["U18", "Under 18"], ["U16", "Under 16"], ["U15", "Under 15"], ["U14", "Under 14"], ["U12", "Under 12"]];
+  function subRoundOptions() {
+    const count = {};
+    state.entries.forEach(function (e) { if (e.code && !e.isLadder) count[e.code] = (count[e.code] || 0) + 1; });
+    const popular = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 15);
+    const all = Object.keys(window.AGB_DATA.rounds).filter(function (c) { return popular.indexOf(c) === -1; })
+      .sort(function (a, b) { return AGB.round(a).n.localeCompare(AGB.round(b).n); });
+    return { popular: popular, all: all };
+  }
+  function buildSubmit() {
+    const d = state.sub;
+    if (!d.date) d.date = isoDate(state.now);
+    const v = function (k) { return escapeHtml(d[k] === undefined ? "" : String(d[k])); };
+    const opt = function (val, label, cur) { return '<option value="' + escapeHtml(val) + '"' + (String(cur) === String(val) ? " selected" : "") + ">" + escapeHtml(label) + "</option>"; };
+    let html = '<div class="card"><h2>Submit a score</h2><p class="card-note">Shot a score you\'d like added to your record? Send it to the club\'s record keeper here. ' +
+      "It goes to them by email; they check it and add it to your score sheet, and it then appears on this site within the hour. " +
+      "Please submit scores shot at the club, club competitions and open tournaments. If you're under 18, ask a parent or guardian to send it for you.</p>";
+    if (!SERVICE_URL) return html + '<p class="card-note">Please give your score to the club\'s record keeper.</p></div>';
+    if (d.sent) {
+      return html + '<div class="sub-done"><p class="status-good"><strong>Thanks, your score has been sent to the record keeper.</strong></p><p>' + escapeHtml(d.sent) + "</p>" +
+        '<button type="button" class="btn" data-sub-again>Submit another score</button></div></div>';
+    }
+    const rounds = subRoundOptions();
+    html += '<form class="optout-form sub-form" id="scoreForm" novalidate autocomplete="on">' +
+      '<div class="sub-grid">' +
+      '<div><label for="subName">Your name</label><input type="text" id="subName" data-sub="name" autocomplete="name" maxlength="80" value="' + v("name") + '" required></div>' +
+      '<div><label for="subEmail">Your email <span class="muted">(optional, so the record keeper can reply)</span></label><input type="email" id="subEmail" data-sub="email" autocomplete="email" maxlength="120" value="' + v("email") + '"></div>' +
+      '<div><label for="subDate">Date shot</label><input type="date" id="subDate" data-sub="date" max="' + isoDate(state.now) + '" value="' + v("date") + '" required></div>' +
+      '<div><label for="subBow">Bow type</label><select id="subBow" data-sub="bow">' + ["Recurve", "Barebow", "Compound", "Longbow", "Flatbow"].map(function (b) { return opt(b, b, d.bow); }).join("") + "</select></div>" +
+      '<div><label for="subGender">Category</label><select id="subGender" data-sub="gender">' + opt("Men", "Men / open", d.gender) + opt("Women", "Women", d.gender) + "</select></div>" +
+      '<div><label for="subAge">Age group</label><select id="subAge" data-sub="age">' + SUB_AGES.map(function (a) { return opt(a[0], a[1], d.age); }).join("") + "</select></div>" +
+      '<div class="span2"><label for="subRound">Round</label><select id="subRound" data-sub="round"><option value="">Choose the round…</option>' +
+      '<optgroup label="Rounds the club shoots most">' + rounds.popular.map(function (c) { return opt(c, AGB.round(c).n, d.round); }).join("") + "</optgroup>" +
+      '<optgroup label="All Archery GB rounds">' + rounds.all.map(function (c) { return opt(c, AGB.round(c).n, d.round); }).join("") + "</optgroup>" +
+      '<option value="other"' + (d.round === "other" ? " selected" : "") + ">Another round (type it below)</option></select></div>" +
+      (d.round === "other" ? '<div class="span2"><label for="subRoundOther">Round name</label><input type="text" id="subRoundOther" data-sub="roundOther" maxlength="80" value="' + v("roundOther") + '"></div>' : "") +
+      '<div><label for="subScore">Score</label><input type="number" id="subScore" data-sub="score" inputmode="numeric" min="0" max="2000" value="' + v("score") + '" required></div>' +
+      '<div><label for="subHits">Hits <span class="muted">(optional)</span></label><input type="number" id="subHits" data-sub="hits" inputmode="numeric" min="0" max="500" value="' + v("hits") + '"></div>' +
+      '<div><label for="subGolds">Golds / 10s <span class="muted">(optional)</span></label><input type="number" id="subGolds" data-sub="golds" inputmode="numeric" min="0" max="500" value="' + v("golds") + '"></div>' +
+      '<div><label for="subPlace">Placing <span class="muted">(optional)</span></label><input type="text" id="subPlace" data-sub="placing" maxlength="20" placeholder="e.g. 2nd" value="' + v("placing") + '"></div>' +
+      '<div class="span2"><label for="subEvent">Where / event <span class="muted">(optional)</span></label><input type="text" id="subEvent" data-sub="event" maxlength="120" placeholder="e.g. Club night, Frostbite league, county championships" value="' + v("event") + '"></div>' +
+      '<div class="span2"><label for="subNotes">Anything else <span class="muted">(optional, e.g. record status, witnesses)</span></label><textarea id="subNotes" data-sub="notes" maxlength="500" rows="2">' + v("notes") + "</textarea></div>" +
+      "</div>" +
+      '<div class="sub-preview" id="subPreview" aria-live="polite">' + subPreviewHtml() + "</div>" +
+      '<input type="text" name="website" id="subWebsite" tabindex="-1" autocomplete="off" class="hp" aria-hidden="true">' +
+      '<label class="check"><input type="checkbox" id="subConfirm"> This is my score, or I\'m sending it for the archer with their permission.</label>' +
+      '<button class="btn primary" type="submit">Send to the record keeper</button>' +
+      '<p class="optout-msg" id="subMsg" role="status" aria-live="polite"></p></form></div>';
+    return html;
+  }
+  function isoDate(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+
+  // What the score means: handicap, classification, PB and club record checks.
+  function subAnalysis() {
+    const d = state.sub, out = [];
+    const score = Number(d.score);
+    if (!d.round || d.round === "other" || d.score === "" || d.score === undefined || isNaN(score)) return { lines: out };
+    const r = AGB.round(d.round);
+    if (!r) return { lines: out };
+    if (score > r.max) return { lines: ["That's more than the maximum possible on a " + r.n + " (" + r.max + "). Please check the score."], bad: true };
+    const hc = AGB.handicapFor(d.round, score);
+    if (hc !== null) out.push("Handicap for this score: " + hc + " (Archery GB 2023 tables).");
+    const t = AGB.classScores(d.round, d.bow === "Flatbow" ? "Barebow" : d.bow, d.gender === "Women" ? "Female" : "Open", d.age);
+    if (t) {
+      let cls = null;
+      t.forEach(function (th, i) { if (th !== null && score >= th) cls = i; });
+      if (cls !== null) out.push("Classification score: " + ORDER[r.loc][cls] + ".");
+    }
+    const key = d.round.replace(/_compound|_triple/g, "");
+    const rec = currentRecords().filter(function (e) { return roundKey(e) === key && e.bucket === d.bow && e.gender2 === d.gender && e.loc === r.loc; })[0];
+    if (rec && score > rec.score) out.push("That would beat the club record (" + rec.score + ")!");
+    else if (!rec) out.push("There's no club record for this round and category yet, so this would set one.");
+    else if (rec) out.push("Club record: " + rec.score + ".");
+    const me = state.members.filter(function (m) { return d.name && normName(m.name) === normName(d.name); })[0];
+    if (me) {
+      const mine = (me.byBow[d.bow] || []).filter(function (e) { return e.code && roundKey(e) === key && e.score !== null; });
+      const pb = mine.reduce(function (a, e) { return Math.max(a, e.score); }, -1);
+      if (pb >= 0) out.push(score > pb ? "A new personal best (previous " + pb + ")." : "Your PB on this round is " + pb + ".");
+    }
+    return { lines: out };
+  }
+  function subPreviewHtml() {
+    const a = subAnalysis();
+    if (!a.lines.length) return "";
+    return '<p class="' + (a.bad ? "status-warn" : "muted") + '">' + a.lines.map(escapeHtml).join("<br>") + "</p>";
+  }
+  function submitScore(form) {
+    const d = state.sub, msg = document.getElementById("subMsg");
+    const warn = function (t) { msg.textContent = t; msg.className = "optout-msg status-warn"; };
+    msg.className = "optout-msg"; msg.textContent = "";
+    if (normName(d.name || "").length < 3) return warn("Please enter your name.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date || "") || new Date(d.date) > state.now) return warn("Please enter the date the score was shot.");
+    if (!d.round || (d.round === "other" && !(d.roundOther || "").trim())) return warn("Please choose the round.");
+    if (d.score === "" || d.score === undefined || isNaN(Number(d.score)) || Number(d.score) < 0) return warn("Please enter the score.");
+    if (subAnalysis().bad) return warn("That score is more than the round allows. Please check it.");
+    if (d.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email)) return warn("That email address doesn't look right.");
+    if (!document.getElementById("subConfirm").checked) return warn("Please tick the box to confirm.");
+    const button = form.querySelector("button[type=submit]");
+    button.disabled = true;
+    msg.textContent = "Sending… this can take up to half a minute.";
+    // One id per score, so pressing Send again after a slow reply never emails twice.
+    d.rid = d.rid || (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+    const roundName = d.round === "other" ? d.roundOther.trim() : AGB.round(d.round).n;
+    const ageLabelText = SUB_AGES.filter(function (x) { return x[0] === d.age; })[0][1];
+    const body = {
+      action: "submitScore", rid: d.rid, website: document.getElementById("subWebsite").value,
+      name: d.name.trim(), email: (d.email || "").trim(), date: d.date, bow: d.bow, category: (d.gender === "Women" ? "Women" : "Men") + ", " + ageLabelText,
+      round: roundName, score: Number(d.score), hits: d.hits || "", golds: d.golds || "", placing: d.placing || "", event: d.event || "", notes: d.notes || "",
+      checks: subAnalysis().lines.join("\n")
+    };
+    const slow = new Promise(function (resolve, reject) { setTimeout(function () { reject(new Error("slow")); }, 60000); });
+    Promise.race([api(body), slow]).then(function (res) {
+      if (!res || !res.ok) throw new Error((res && res.error) || "failed");
+      state.sub = { bow: d.bow, gender: d.gender, age: d.age, name: d.name, email: d.email,
+        sent: body.name + ": " + body.round + " " + body.score + " (" + body.bow.toLowerCase() + ", " + fmtDate(new Date(body.date)) + ")." };
+      render();
+    }).catch(function (err) {
+      warn(err && err.message === "slow" ? "Google is being slow to answer. Your score may still have been sent: pressing Send again is safe and won't send it twice."
+        : err && err.message && err.message !== "failed" ? err.message : "Sorry, that didn't go through. Please try again (it won't send twice), or give your score to the record keeper.");
+      button.disabled = false;
+    });
+  }
+
+  // =====================================================================
   // Rendering, tabs, events
   // =====================================================================
   const TABS = [
@@ -2867,6 +3003,7 @@
     { id: "leagues", label: "Leagues", build: buildLeagues },
     { id: "badges", label: "252 badges", build: buildBadges },
     { id: "awards", label: "Awards", build: buildAwards },
+    { id: "submit", label: "Submit a score", build: buildSubmit },
     { id: "privacy", label: "Privacy", build: buildPrivacy, hidden: true },
     { id: "admin", label: "Site admin", build: buildAdmin, draw: drawAdmin, hidden: true }
   ];
@@ -2929,6 +3066,7 @@
   });
   panels.addEventListener("submit", function (ev) {
     if (ev.target.id === "requestForm") { ev.preventDefault(); submitRequest(ev.target); }
+    if (ev.target.id === "scoreForm") { ev.preventDefault(); submitScore(ev.target); }
     if (ev.target.id === "addSheetForm" && state.admin) {
       ev.preventDefault();
       const v = document.getElementById("addSheetInput").value.trim();
@@ -2950,7 +3088,24 @@
       window.print();
     }
   });
+  // Score form: keep a draft (so a background refresh doesn't lose it) and
+  // update the preview without redrawing the form.
+  function subField(ev) {
+    const k = ev.target.dataset && ev.target.dataset.sub;
+    if (!k) return false;
+    state.sub[k] = ev.target.value;
+    delete state.sub.rid;
+    if (k === "round" && (ev.target.value === "other") !== !!document.getElementById("subRoundOther")) { render(); const r = document.getElementById("subRound"); if (r) r.focus(); return true; }
+    const p = document.getElementById("subPreview");
+    if (p) p.innerHTML = subPreviewHtml();
+    return true;
+  }
+  panels.addEventListener("input", function (ev) { subField(ev); });
+  panels.addEventListener("click", function (ev) {
+    if (ev.target.closest("[data-sub-again]")) { delete state.sub.sent; render(); }
+  });
   panels.addEventListener("change", function (ev) {
+    if (subField(ev)) return;
     if (ev.target.matches("[data-pred]")) {
       const k = ev.target.dataset.pred;
       state.pred[k] = k === "hc" ? ev.target.value : ev.target.value;
