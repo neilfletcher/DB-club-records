@@ -10,6 +10,16 @@
   // Only the page itself is reported: the sheet link and name in the address stay private.
   gtag('config', 'G-JF54HQGVLT', { page_location: location.origin + location.pathname, page_title: 'Duston Bowmen Records' });
 </script>
+<script>
+  // Usage events for the admin dashboard: what was done here, never who did it.
+  window.ssTrack = function (name, detail) {
+    try { if (window.gtag) gtag('event', name, detail ? { detail: String(detail).slice(0, 60) } : {}); } catch (e) {}
+  };
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest && e.target.closest('[data-tab]');
+    if (t) window.ssTrack('tab_viewed', t.getAttribute('data-tab'));
+  }, true);
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Duston Bowmen Records</title>
 <meta name="description" content="Duston Bowmen club records, classifications, handicaps and 252 badges, read live from the club's score sheets. Adults only.">
@@ -2134,6 +2144,7 @@
     state.entries = all;
     state.visible = all.filter(function (e) { return !e.member.withheld; });
     state.loaded = true;
+    if (window.ssTrack) window.ssTrack("data_loaded");
   }
 
   // =====================================================================
