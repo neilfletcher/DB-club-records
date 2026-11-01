@@ -2149,6 +2149,7 @@
     state.members = members.filter(function (m) { return !m.withheld; });
     state.entries = all;
     state.visible = all.filter(function (e) { return !e.member.withheld; });
+    state.provisional = buildProvisional(state.pending || []);
     state.loaded = true;
     if (window.ssTrack) window.ssTrack("data_loaded");
   }
@@ -2251,6 +2252,16 @@
       tile("Personal bests", count("pb"), "beating their previous best") +
       tile("Club records", count("record"), "new records set") + "</div>";
 
+    const prov = state.provisional || [];
+    if (prov.length) {
+      html += '<div class="card"><h2>Scores sent in</h2><p class="card-note">Sent in on the site and counted in the leagues straight away as <span class="badge">PROVISIONAL</span>. ' +
+        "They move to the archer's own record once the record keeper adds them to the score sheet, and only then count towards club records and handicaps.</p>" +
+        '<div class="table-wide-scroll"><table><thead><tr><th>Date</th><th>Archer</th><th>Round</th><th class="num">Score</th></tr></thead><tbody>' +
+        prov.map(function (e) {
+          return '<tr><td class="nowrap">' + fmtDate(e.date) + "</td><td>" + escapeHtml(e.member.name) + ' <span class="muted small nowrap">' + bowDot(e.bucket) + escapeHtml(e.bucket) + "</span></td><td>" +
+            escapeHtml(e.round) + '</td><td class="num"><strong>' + e.score + "</strong>" + provTag(e) + "</td></tr>";
+        }).join("") + "</tbody></table></div></div>";
+    }
     html += '<div class="card"><h2>Achievements</h2><p class="card-note">Club records, podiums, classification scores, 252 badges, PBs and handicap improvements, newest first.</p>';
     if (events.length) {
       html += '<div class="table-scroll" style="max-height:520px"><table><thead><tr><th>Date</th><th>Archer</th><th>What</th></tr></thead><tbody>';
@@ -2761,6 +2772,8 @@
         throw new Error((res && res.error) || "The request failed.");
       }
       a.data = res;
+      // Scores removed in admin drop off the public list straight away.
+      if (Array.isArray(res.pending)) { const live = {}; res.pending.forEach(function (p) { live[p.id] = true; }); state.pending = (state.pending || []).filter(function (p) { return live[p.id]; }); }
       // In service mode the admin copy includes every name, for the lists and
       // checks; it stays in memory and names are removed before caching.
       if (Array.isArray(res.archers)) state.memRaw = res.archers.map(function (x) { return { id: x.k, name: x.junior ? null : x.name, junior: !!x.junior, grown: !!x.grown && !x.junior, rows: x.rows }; });
@@ -2813,6 +2826,23 @@
     html += '<p class="card-note">Signed in as <strong>' + escapeHtml(a.email || "…") + '</strong> · <button type="button" class="linkish" data-admin="signout">Sign out</button></p>' +
       (a.busy ? '<p class="muted small">Working…</p>' : "") + (a.msg ? '<p class="status-warn">' + escapeHtml(a.msg) + "</p>" : "") + "</div>";
     if (!a.data) return html;
+
+    const pend = a.data.pending || [];
+    if (Array.isArray(a.data.pending)) {
+      const shown = {};
+      (state.provisional || []).forEach(function (e) { shown[e.pid] = true; });
+      html += '<div class="card"><h2>Scores sent in</h2><p class="card-note">Scores sent in with "Submit a score" in the last 60 days. Those matched to an adult member show on the site as provisional (leagues and Recent) until the record keeper adds them to the score sheet. ' +
+        "Remove one if it's wrong; it stays in the Submissions tab of the service's sheet.</p>";
+      if (!pend.length) html += '<p class="muted small">Nothing waiting.</p></div>';
+      else {
+        html += '<div class="table-wide-scroll"><table><thead><tr><th>Shot</th><th>Name</th><th>Score</th><th>On the site</th><th></th></tr></thead><tbody>' +
+          pend.slice().sort(function (x, y) { return String(y.date).localeCompare(String(x.date)); }).map(function (p) {
+            return '<tr><td class="nowrap">' + escapeHtml(p.date) + "</td><td>" + escapeHtml(p.name) + '<br><span class="muted small">' + escapeHtml(p.category) + "</span></td><td>" + escapeHtml(p.bow + " " + p.round + " " + p.score) + "</td><td>" +
+              (shown[p.id] ? "Provisional" : '<span class="muted small">Not shown (on the sheet already, or not matched to an adult member)</span>') + "</td><td>" +
+              '<button type="button" class="btn" data-admin="removePending" data-id="' + escapeHtml(p.id) + '"' + (a.busy ? " disabled" : "") + ">Remove</button></td></tr>";
+          }).join("") + "</tbody></table></div></div>";
+      }
+    }
 
     const mode = a.data.status ? a.data.status.mode : state.privacy.mode;
     html += '<div class="card"><h2>Who is shown</h2><p class="card-note">Hidden people are left off every page except Club records, where records they hold show as "' + WITHHELD + '".</p>' +
@@ -2890,6 +2920,7 @@
     else if (act === "approve") adminCall({ action: "setStatus", name: b.dataset.name, status: b.dataset.kind });
     else if (act === "dismiss") adminCall({ action: "dismiss", name: b.dataset.name });
     else if (act === "rebuild") adminCall({ action: "rebuild" });
+    else if (act === "removePending") { if (window.confirm("Remove this score from the site? It stays in the Submissions tab.")) adminCall({ action: "removePending", id: b.dataset.id }); }
     else if (act === "removeSheet") { if (window.confirm("Stop reading this sheet? (It isn't deleted from the Drive.)")) adminCall({ action: "removeSheet", id: b.dataset.id }); }
   });
 
@@ -3394,9 +3425,43 @@
 
   // One row per archer: their best adjusted score in the season across the
   // bow types they shot, with their other bows alongside.
+  // =====================================================================
+  // Provisional scores: sent in with "Submit a score" and shown straight away
+  // (leagues and Recent only, never club records or handicaps) until the
+  // record keeper adds them to the archer's sheet. The service only sends
+  // scores it could match to an adult member shown by name.
+  // =====================================================================
+  function buildProvisional(list) {
+    const byId = {};
+    (state.members || []).forEach(function (m) { if (!m.withheld && !m.junior) byId[m.id] = m; });
+    const out = [];
+    list.forEach(function (p) {
+      const m = byId[p.k];
+      const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(p.date || "");
+      if (!m || !d) return;
+      const e = entryFromRow(["Date(" + d[1] + "," + (Number(d[2]) - 1) + "," + Number(d[3]) + ")", p.category || "", p.bow || "", p.round || "", String(p.score), "", "", "", "", "", p.placing || ""]);
+      if (!e || e.score === null) return;
+      const info = AGB.round(e.code);
+      if (info && e.score > info.max) return;
+      // Already on the sheet (same bow, round and score within a few days): ratified.
+      const key = leagueRoundOf(e) || String(e.round).toLowerCase();
+      const onSheet = m.entries.some(function (x) {
+        return x.score === e.score && x.bucket === e.bucket && Math.abs(x.date - e.date) <= 3 * 864e5 && (leagueRoundOf(x) || String(x.round).toLowerCase()) === key;
+      });
+      if (onSheet) return;
+      e.member = m; e.gender2 = genderOf(e.category); e.provisional = true; e.pid = p.id; e.events = [];
+      out.push(e);
+    });
+    return out.sort(function (a, b) { return b.date - a.date; });
+  }
+  function provTag(e) {
+    return e && e.provisional ? ' <span class="badge" title="Sent in on the site; the record keeper hasn\'t added it to the score sheet yet">PROVISIONAL</span>' : "";
+  }
+  function leagueEntries() { return state.entries.concat(state.provisional || []); }
+
   function leagueTable(def, year) {
     const by = {};
-    state.entries.forEach(function (e) {
+    leagueEntries().forEach(function (e) {
       if (e.score === null || def.rounds.indexOf(leagueRoundOf(e)) === -1 || !inWinter(e, year)) return;
       const info = AGB.round(e.code);
       const adj = leagueAdjust(def.key, e.bucket, e.score, info ? info.max : null);
@@ -3425,7 +3490,7 @@
     rows.forEach(function (r, i) {
       const b = r.best;
       html += '<tr><td class="num">' + pos[i] + "</td><td>" + nameCell(r.m, b.e) + '</td><td class="nowrap">' + bowDot(b.e.bucket) + b.e.bucket +
-        '</td><td class="num">' + b.e.score + '</td><td class="num"><strong>' + b.adj.toFixed(1) + '</strong></td><td class="nowrap muted small">' + fmtDate(b.e.date) +
+        '</td><td class="num">' + b.e.score + provTag(b.e) + '</td><td class="num"><strong>' + b.adj.toFixed(1) + '</strong></td><td class="nowrap muted small">' + fmtDate(b.e.date) +
         '</td><td class="muted small">' + r.entries.slice(1).map(function (o) { return o.e.bucket + " " + o.e.score + (o.e.bucket !== "Recurve" ? " (" + o.adj.toFixed(1) + ")" : ""); }).join(", ") + "</td></tr>";
     });
     return html + "</tbody></table></div></div>";
@@ -3442,7 +3507,7 @@
     const when = r.to < state.now ? r.to : state.now;
     const whenEnd = new Date(when.getFullYear(), when.getMonth(), when.getDate(), 23, 59);
     const by = {};
-    state.entries.forEach(function (e) {
+    leagueEntries().forEach(function (e) {
       if (e.score === null || !e.code || !inWinter(e, year)) return;
       const idx = QUIVER_ROUNDS.findIndex(function (q) { return leagueRoundOf(e) === q[1]; });
       if (idx === -1) return;
@@ -3478,11 +3543,11 @@
 
   function quiverCard(year) {
     const rows = quiverTable(year);
-    let html = '<div class="card league"><h2>Quiver Shiver</h2><p class="card-note">Handicap adjusted: the best score on each of the four rounds plus the handicap allowance at the archer\'s handicap for that bow at the end of the season (their current handicap while the season is running), added together. Archers who have shot all four rounds are listed first.</p>';
+    let html = '<div class="card league"><h2>Quiver Shiver</h2><p class="card-note">Handicap adjusted: the best score on each of the four rounds plus the handicap allowance at the archer\'s handicap for that bow at the end of the season (their current handicap while the season is running), added together. Archers who have shot all four rounds are listed first. * includes a provisional score.</p>';
     if (!rows.length) return html + '<p class="muted small">No scores yet this season.</p></div>';
     html += '<div class="table-wide-scroll"><table><thead><tr><th>Archer</th>' + QUIVER_ROUNDS.map(function (q) { return '<th class="num">' + q[0] + "</th>"; }).join("") + '<th class="num">Total</th></tr></thead><tbody>';
     rows.forEach(function (x) {
-      html += "<tr><td>" + nameCell(x.m, (x.best.filter(Boolean)[0] || {}).e) + "</td>" + x.best.map(function (c) { return '<td class="num">' + (c ? '<span title="' + c.bow + " " + c.e.score + '">' + bowDot(c.bow) + c.adj + "</span>" : '<span class="muted">-</span>') + "</td>"; }).join("") +
+      html += "<tr><td>" + nameCell(x.m, (x.best.filter(Boolean)[0] || {}).e) + "</td>" + x.best.map(function (c) { return '<td class="num">' + (c ? '<span title="' + c.bow + " " + c.e.score + (c.e.provisional ? " (provisional)" : "") + '">' + bowDot(c.bow) + c.adj + (c.e.provisional ? "*" : "") + "</span>" : '<span class="muted">-</span>') + "</td>"; }).join("") +
         '<td class="num"><strong>' + x.total + "</strong>" + (x.count < 4 ? ' <span class="muted small">(' + x.count + "/4)</span>" : "") + "</td></tr>";
     });
     return html + "</tbody></table></div></div>";
@@ -4458,7 +4523,7 @@
       window[cb] = function (res) {
         clearTimeout(timer);
         if (!res || !res.ok || !Array.isArray(res.archers)) { finish({ raw: [], failed: 1 }); return; }
-        finish({ raw: res.archers.map(function (x) { return { id: x.k, name: x.withheld || x.junior ? null : x.name, withheld: !!x.withheld || !!x.junior, junior: !!x.junior, grown: !!x.grown && !x.junior, rows: x.rows || [] }; }), failed: 0 });
+        finish({ raw: res.archers.map(function (x) { return { id: x.k, name: x.withheld || x.junior ? null : x.name, withheld: !!x.withheld || !!x.junior, junior: !!x.junior, grown: !!x.grown && !x.junior, rows: x.rows || [] }; }), pending: Array.isArray(res.pending) ? res.pending : [], failed: 0 });
       };
       script.onerror = function () { clearTimeout(timer); finish({ raw: [], failed: 1 }); };
       script.src = SERVICE_URL + (SERVICE_URL.indexOf("?") === -1 ? "?" : "&") + "action=data&callback=" + cb;
@@ -4503,7 +4568,7 @@
 
   function saveCache(savedAt) {
     return sanitize(state.memRaw).then(function (clean) {
-      store(RSTORE.cache, JSON.stringify({ savedAt: savedAt, raw: clean }));
+      store(RSTORE.cache, JSON.stringify({ savedAt: savedAt, raw: clean, pending: state.pending || [] }));
       return clean;
     });
   }
@@ -4526,6 +4591,7 @@
     let live = false;
     if (cached && Array.isArray(cached.raw)) {
       state.memRaw = cached.raw;
+      state.pending = Array.isArray(cached.pending) ? cached.pending : [];
       sanitize(cached.raw).then(function (clean) {
         if (live) return;
         prepare(clean);
@@ -4556,6 +4622,7 @@
       live = true;
       state.now = new Date();
       state.memRaw = res.raw;
+      if (res.pending) state.pending = res.pending;
       return refreshShown().then(function () {
         setStatus(statusText("updated " + new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) +
           (res.failed ? " · " + res.failed + (res.failed === 1 ? " sheet" : " sheets") + " couldn't be read" : "")), res.failed > 0);
