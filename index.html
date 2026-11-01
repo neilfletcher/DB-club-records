@@ -888,7 +888,7 @@
     <footer class="page-foot">
       A read-only view of the club record keeper's score sheets, refreshed on each visit; the last copy is kept in your browser so the page works offline.
       Junior scores count towards club records and leagues; archers under 18 are never named.
-      Handicaps and classifications use the Archery GB 2023 scheme (older scores keep the handicaps recorded at the time). Classification scores come from
+      Handicaps and classifications use the Archery GB 2023 scheme; handicaps are worked out from the scores with Archery GB's rules (from 2023 on), not taken from the sheets. Classification scores come from
       <a href="https://github.com/jatkinson1000/archery-utils" target="_blank" rel="noopener">archeryutils</a>. Spotted a mistake? Tell the record keeper; this page only reads the sheets.
       Track your own scores with the <a href="https://neilfletcher.github.io/DB-archery-dashboard/">club score tracker</a>.
       <a href="#privacy">Privacy</a> · <a href="#admin">Site admin</a>
@@ -1748,7 +1748,7 @@
     let head = e.round || "Club shoot";
     if (e.score !== null) head += ": " + e.score;
     lines.push(head);
-    if (hcField === "hcRunning" && e.hcRunning !== null) lines.push("Running handicap " + e.hcRunning);
+    if (hcField === "hcRunning" && e.hcRunning !== null) lines.push((e.loc === "indoor" ? "Indoor" : "Outdoor") + " handicap " + e.hcRunning);
     if (e.hcRound !== null) lines.push("Round handicap " + e.hcRound);
     if (e.classification) lines.push(e.classification);
     return lines;
@@ -1765,7 +1765,7 @@
 
   function computeEvents(list, disc) {
     const best = {}, seasonBest = {}, ladderQ = {};
-    let lowRun = null;
+    const prevRun = {};
     list.forEach(function (e) {
       e.events = [];
       if (e.round && e.score !== null) {
@@ -1789,8 +1789,9 @@
         }
       }
       if (e.hcRunning !== null) {
-        if (lowRun !== null && e.hcRunning < lowRun) e.events.push({ type: "hcp", text: "Handicap down to " + e.hcRunning + " (from " + lowRun + ")" });
-        if (lowRun === null || e.hcRunning < lowRun) lowRun = e.hcRunning;
+        const was = prevRun[e.loc];
+        if (was !== undefined && e.hcRunning < was) e.events.push({ type: "hcp", text: (e.loc === "indoor" ? "Indoor" : "Outdoor") + " handicap down to " + e.hcRunning + " (from " + was + ")" });
+        prevRun[e.loc] = e.hcRunning;
       }
       if (e.placing && e.placing <= 3) e.events.push({ type: "podium", text: ordinal(e.placing) + " place" + (e.round ? " (" + e.round + ")" : "") });
     });
@@ -2018,7 +2019,8 @@
     rec: { loc: "outdoor", bow: "Recurve", gender: "all", age: "open", jage: null, period: "all", open: null },
     recent: { days: 90 },
     honours: { season: null, bow: "all" },
-    hcp: { bow: "all", sort: "hcp", period: "12m" },
+    hcp: { bow: "all", sort: "hcp", period: "12m", loc: "all" },
+    oneEnd: "",
     pred: { hc: 50, bow: "Recurve", gender: "Open", age: "Adult", scope: "club" },
     sub: { bow: "Recurve", gender: "Men", age: "Adult" },
     badges: { bow: "all" },
@@ -2120,6 +2122,8 @@
       adult.forEach(function (e) { e.member = m; e.gender2 = genderOf(e.category); });
       const byBow = {};
       adult.forEach(function (e) { (byBow[e.bucket] = byBow[e.bucket] || []).push(e); });
+      m.hcp = {};
+      Object.keys(byBow).forEach(function (b) { m.hcp[b] = computeHandicaps(byBow[b], state.now || new Date()); });
       Object.keys(byBow).forEach(function (b) { computeEvents(byBow[b], b); });
       addMilestones(m);
       m.bows = DISCIPLINE_ORDER.filter(function (b) { return byBow[b]; });
@@ -2358,44 +2362,53 @@
   function buildHandicaps() {
     const f = state.hcp;
     const yearAgo = new Date(state.now.getTime() - 365 * 864e5);
+    // "Since 2023": handicaps from before the Archery GB 2023 tables aren't
+    // comparable with today's, so the longer view starts there.
     const all = f.period === "all";
-    const from = all ? new Date(0) : yearAgo;
     const rows = [];
     state.members.forEach(function (m) {
       Object.keys(m.byBow).forEach(function (b) {
         if (!DISCIPLINE_COLOR[b] || (f.bow !== "all" && b !== f.bow)) return;
-        const recent = m.byBow[b].filter(function (e) { return e.date >= from; });
-        const withRun = recent.filter(function (e) { return e.hcRunning !== null; });
-        if (!withRun.length) return;
-        const last = withRun[withRun.length - 1];
-        const before = m.byBow[b].filter(function (e) { return e.hcRunning !== null && e.date < from; });
-        const start = before.length ? before[before.length - 1] : withRun[0];
-        const bestRound = minBy(recent.filter(function (e) { return e.hcRound !== null; }), function (e) { return e.hcRound; });
-        rows.push({ m: m, bow: b, hcp: last.hcRunning, change: start.hcRunning - last.hcRunning, shots: recent.length, last: recent[recent.length - 1].date, bestRound: bestRound, lapsed: last.date < yearAgo });
+        ["outdoor", "indoor"].forEach(function (loc) {
+          if (f.loc !== "all" && f.loc !== loc) return;
+          const hcp = hcpNow(m, b, loc);
+          if (hcp === null) return;
+          const from = all ? HCP_START[loc] : yearAgo;
+          const shot = m.byBow[b].filter(function (e) { return e.loc === loc && hcpCounts(e); });
+          const recent = shot.filter(function (e) { return e.date >= from; });
+          if (!recent.length) return;
+          const changes = m.hcp[b][loc];
+          const before = hcpAt(m, b, loc, from);
+          const start = before !== null ? before : changes[0].hc;
+          const bestRound = minBy(recent, function (e) { return hcOf(e); });
+          const last = recent[recent.length - 1].date;
+          rows.push({ m: m, bow: b, loc: loc, hcp: hcp, change: start - hcp, shots: recent.length, last: last, bestRound: bestRound, inactive: last < yearAgo });
+        });
       });
     });
     if (f.sort === "improved") rows.sort(function (a, b) { return b.change - a.change || a.hcp - b.hcp; });
     else rows.sort(function (a, b) { return a.hcp - b.hcp || b.change - a.change; });
 
-    let html = '<div class="card"><h2>Handicaps</h2><p class="card-note">' + (all
-      ? "Latest running handicap from each archer\'s sheet for every bow type they have shot, including people who haven\'t shot for a while. " +
-        "Archery GB handicaps lapse after 12 months without a qualifying score, so older ones are marked <span class=\"badge\">LAPSED</span>. Lower is better. Change is since their first recorded handicap.</p>"
-      : "Current running handicap from each archer\'s sheet, for bow types shot in the last 12 months (as Archery GB uses). " +
-        "Lower is better. Improvement compares with where the handicap stood 12 months ago (or at the first shoot since).</p>");
+    let html = '<div class="card"><h2>Handicaps</h2><p class="card-note">Worked out from the scores using Archery GB\'s handicap rules: separate outdoor and indoor handicaps for each bow type, ' +
+      "starting from the average of an archer\'s first three scores, improving whenever they shoot better than their handicap, and re-assessed on 1 January (outdoor) and 1 July (indoor) " +
+      "to the average of their best three from the year before, so a handicap can go up as well as down. Uses the 2023 tables, so only scores from 2023 on count; practice rounds and 252s don\'t. Lower is better. " +
+      (all ? "Change is since their first handicap from 2023 on; <span class=\"badge\">INACTIVE</span> means no score for that bow and location in the last 12 months.</p>"
+        : "Shows bow types shot in the last 12 months; change compares with their handicap 12 months ago.</p>");
     html += '<div class="controls-row">' + segButtons("hcp.bow", bowOptions(true), f.bow) +
-      segButtons("hcp.period", [["12m", "Last 12 months"], ["all", "All time"]], f.period) +
+      segButtons("hcp.loc", [["all", "Outdoor and indoor"], ["outdoor", "Outdoor"], ["indoor", "Indoor"]], f.loc) +
+      segButtons("hcp.period", [["12m", "Last 12 months"], ["all", "Since 2023"]], f.period) +
       segButtons("hcp.sort", [["hcp", "Best handicap"], ["improved", "Most improved"]], f.sort) + "</div>";
-    if (!rows.length) return html + '<p class="muted">No handicaps ' + (all ? "" : "in the last 12 months ") + "for this selection.</p></div>" + predictorCard();
-    html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">#</th><th>Archer</th><th>Bow type</th><th class="num">Handicap</th><th class="num">' + (all ? "Change" : "12-month change") + "</th>" +
-      "<th>Best round" + (all ? "" : " (12 months)") + '</th><th class="num">Shoots</th><th>Last shoot</th></tr></thead><tbody>';
+    if (!rows.length) return html + '<p class="muted">No handicaps ' + (all ? "since 2023 " : "in the last 12 months ") + "for this selection.</p></div>" + oneEndCard() + predictorCard();
+    html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">#</th><th>Archer</th><th>Bow type</th><th class="num">Handicap</th><th class="num">' + (all ? "Change since 2023" : "12-month change") + "</th>" +
+      "<th>Best round" + (all ? " (since 2023)" : " (12 months)") + '</th><th class="num">Scores</th><th>Last score</th></tr></thead><tbody>';
     rows.forEach(function (r, i) {
       const ch = r.change > 0 ? '<span class="status-good">▲ ' + r.change + "</span>" : r.change < 0 ? '<span class="status-warn">▼ ' + (-r.change) + "</span>" : '<span class="muted">0</span>';
-      html += '<tr><td class="num muted">' + (i + 1) + "</td><td>" + escapeHtml(r.m.name) + '</td><td class="nowrap">' + bowDot(r.bow) + r.bow + '</td><td class="num"><strong>' + r.hcp +
-        '</strong></td><td class="num">' + ch + "</td><td>" + (r.bestRound ? escapeHtml(r.bestRound.round) + " " + r.bestRound.score + ' <span class="muted small">(hcp ' + r.bestRound.hcRound + ")</span>" : "-") +
-        '</td><td class="num">' + r.shots + '</td><td class="nowrap">' + fmtDate(r.last) + (r.lapsed ? ' <span class="badge" title="No score for over 12 months: this Archery GB handicap has lapsed">LAPSED</span>' : "") + "</td></tr>";
+      html += '<tr><td class="num muted">' + (i + 1) + "</td><td>" + escapeHtml(r.m.name) + '</td><td class="nowrap">' + bowDot(r.bow) + r.bow + ' <span class="muted small">' + locLabel(r.loc) + '</span></td><td class="num"><strong>' + r.hcp +
+        '</strong></td><td class="num">' + ch + "</td><td>" + (r.bestRound ? escapeHtml(r.bestRound.round) + " " + r.bestRound.score + ' <span class="muted small">(hcp ' + hcOf(r.bestRound) + ")</span>" : "-") +
+        '</td><td class="num">' + r.shots + '</td><td class="nowrap">' + fmtDate(r.last) + (r.inactive ? ' <span class="badge" title="No score for this bow and location in the last 12 months">INACTIVE</span>' : "") + "</td></tr>";
     });
     html += "</tbody></table></div></div>";
-    return html + predictorCard();
+    return html + oneEndCard() + predictorCard();
   }
 
   // =====================================================================
@@ -2890,6 +2903,131 @@
   });
 
   // =====================================================================
+  // Handicaps worked out from the scores (Archery GB SAP 9)
+  // =====================================================================
+  // The score sheets' running handicap column is never re-assessed, so the
+  // site works handicaps out itself, following Archery GB's Shooting
+  // Administrative Procedures (SAP 9), from 2023 when the current tables began:
+  //  - separate outdoor and indoor handicaps for each bow type;
+  //  - each score is rated at its handicap on the 2023 tables;
+  //  - the first handicap is the average of the first three ratings;
+  //  - a rating better than the current handicap moves it to the average of
+  //    the two;
+  //  - re-assessed on 1 January (outdoor) and 1 July (indoor) to the average
+  //    of the best three ratings from the year just ended; with fewer than
+  //    three, the previous re-assessed handicap joins the average; with none,
+  //    the handicap stays as it is;
+  //  - every average is rounded down.
+  // Practice rounds (252s, dozens at one distance) and club-only rounds such
+  // as Frostbite 20 don't count.
+  const HCP_START = { outdoor: new Date(2023, 0, 1), indoor: new Date(2023, 6, 1) };
+  function hcpCounts(e) {
+    return !!(e.code && e.score !== null && !/^misc_/.test(e.code) && e.code !== "frostbite_20" && e.date >= HCP_START[e.loc]);
+  }
+  function hcpNextReset(loc, start) {
+    return loc === "outdoor" ? new Date(start.getFullYear() + 1, 0, 1) : new Date(start.getFullYear() + 1, 6, 1);
+  }
+  function avgDown(list) {
+    return Math.floor(list.reduce(function (s, v) { return s + v; }, 0) / list.length);
+  }
+
+  // list: one archer's entries for one bow type, in date order. Sets
+  // e.hcRunning to the handicap in force for that score's location once the
+  // score is counted (null before there is one, or before 2023) and keeps the
+  // sheet's figure as e.hcSheet. Returns { outdoor, indoor }: each a list of
+  // { date, hc, why } changes ("first", "better", "reset"), up to `until`.
+  function computeHandicaps(list, until) {
+    const out = {};
+    ["outdoor", "indoor"].forEach(function (loc) {
+      const changes = [];
+      let hc = null, lastReset = null, yearStart = HCP_START[loc];
+      let pending = [], ratings = [];
+      const roll = function (to) {
+        let next = hcpNextReset(loc, yearStart);
+        while (next <= to) {
+          if (hc !== null && ratings.length) {
+            const best = ratings.slice().sort(function (a, b) { return a - b; }).slice(0, 3);
+            const v = avgDown(best.length < 3 ? best.concat([lastReset !== null ? lastReset : hc]) : best);
+            lastReset = v;
+            if (v !== hc) changes.push({ date: next, hc: v, why: "reset", from: hc });
+            hc = v;
+          }
+          ratings = [];
+          yearStart = next;
+          next = hcpNextReset(loc, yearStart);
+        }
+      };
+      list.forEach(function (e) {
+        if (e.loc !== loc) return;
+        if (e.hcSheet === undefined) e.hcSheet = e.hcRunning;
+        if (e.date < HCP_START[loc]) { e.hcRunning = null; return; }
+        roll(e.date);
+        const r = hcpCounts(e) ? hcOf(e) : null;
+        if (r !== null) {
+          ratings.push(r);
+          if (hc === null) {
+            pending.push(r);
+            if (pending.length === 3) { hc = avgDown(pending); changes.push({ date: e.date, hc: hc, why: "first", e: e }); }
+          } else if (r < hc) {
+            const from = hc;
+            hc = avgDown([hc, r]);
+            changes.push({ date: e.date, hc: hc, why: "better", from: from, e: e });
+          }
+        }
+        e.hcRunning = hc;
+      });
+      roll(until);
+      out[loc] = changes;
+    });
+    return out;
+  }
+
+  // An archer's handicap for a bow type and location on a date (null: none).
+  function hcpAt(m, bow, loc, when) {
+    const changes = m.hcp && m.hcp[bow] && m.hcp[bow][loc];
+    if (!changes) return null;
+    let v = null;
+    for (let i = 0; i < changes.length && changes[i].date <= when; i++) v = changes[i].hc;
+    return v;
+  }
+  function hcpNow(m, bow, loc) { return hcpAt(m, bow, loc, state.now); }
+  function locLabel(loc) { return loc === "indoor" ? "indoor" : "outdoor"; }
+
+  // Quick handicap for the Malcolm Wright Frostbite: an archer without a
+  // handicap is rated from their first scoring end(s), scaled up to the full
+  // 36 arrows of the Frostbite round.
+  function oneEndHandicap(text) {
+    const ends = String(text || "").split(/[^0-9]+/).filter(function (s) { return s !== ""; }).map(Number);
+    if (!ends.length) return null;
+    if (ends.length > 6 || ends.some(function (v) { return v > 60; })) return { error: "Enter up to six end scores, each out of 60." };
+    const info = AGB.round("frostbite");
+    if (!info) return { error: "The Frostbite tables aren't available." };
+    const total = ends.reduce(function (s, v) { return s + v; }, 0);
+    if (!total) return { error: "Enter a score above 0." };
+    const scaled = Math.round(total * info.a / (ends.length * 6));
+    const hc = AGB.handicapFor("frostbite", Math.min(info.max, scaled));
+    if (hc === null) return { error: "Couldn't work out a handicap for that score." };
+    return { ends: ends.length, total: total, scaled: scaled, hc: hc, predicted: info.table[hc], allowance: 1440 - info.table[hc] };
+  }
+  function oneEndHtml() {
+    const r = oneEndHandicap(state.oneEnd);
+    if (!r) return '<p class="muted">Enter the score of the first scoring end (not the sighters).</p>';
+    if (r.error) return '<p class="status-warn">' + escapeHtml(r.error) + "</p>";
+    return '<div class="tile-row">' +
+      tile("Handicap", r.hc, "estimated outdoor") +
+      tile("Allowance", r.allowance, "added to the Frostbite score") +
+      tile("Predicted Frostbite", r.predicted, "out of 360 at this handicap") + "</div>" +
+      '<p class="card-note">From ' + r.ends + " end" + (r.ends === 1 ? "" : "s") + " (" + r.total + " points), scaled to " + r.scaled + " over 36 arrows. " +
+      "One end is a rough guide: a good or bad end moves it a lot, so use more ends when you can.</p>";
+  }
+  function oneEndCard() {
+    return '<div class="card" id="oneEnd"><h2>Quick handicap from the first end</h2><p class="card-note">For a handicapped Frostbite such as the Malcolm Wright Memorial: an archer with no handicap can be given one from their first scoring end (not the sighters). ' +
+      "Archers who already have an outdoor handicap should use that (in the table above). You can enter more than one end, separated by commas.</p>" +
+      '<div class="controls-row"><label class="ctl">End score(s) <input type="text" inputmode="numeric" data-one-end value="' + escapeHtml(state.oneEnd || "") + '" placeholder="e.g. 42" style="width:9em"></label></div>' +
+      '<div id="oneEndOut">' + oneEndHtml() + "</div></div>";
+  }
+
+  // =====================================================================
   // Shared helpers for challenges, history, awards
   // =====================================================================
   // Handicap worked out from the score with the 2023 tables, so old and new
@@ -2972,13 +3110,17 @@
     return JUNIOR_AGES.filter(function (a) { return have[a]; });
   }
 
-  // Latest running handicap per visible archer and bow type, within 12 months.
+  // Current handicap per visible archer, bow type and location, for those
+  // who have shot that bow and location in the last 12 months.
   function currentHandicaps() {
     const out = {};
     state.members.forEach(function (m) {
       Object.keys(m.byBow).forEach(function (b) {
-        const w = m.byBow[b].filter(function (e) { return e.hcRunning !== null && within(e, 365); });
-        if (w.length) out[m.id + "|" + b] = w[w.length - 1].hcRunning;
+        ["outdoor", "indoor"].forEach(function (loc) {
+          if (!m.byBow[b].some(function (e) { return e.loc === loc && hcpCounts(e) && within(e, 365); })) return;
+          const h = hcpNow(m, b, loc);
+          if (h !== null) out[m.id + "|" + b + "|" + loc] = h;
+        });
       });
     });
     return out;
@@ -3005,7 +3147,7 @@
         if (!mine.length) return;
         const recent = mine.filter(function (e) { return within(e, 365) && e.score !== null && recordKey(e) === key; });
         const bestRecent = maxBy(recent, function (e) { return e.score; });
-        const hc = hcs[m.id + "|" + rec.bucket];
+        const hc = hcs[m.id + "|" + rec.bucket + "|" + rec.loc];
         const predicted = hc !== undefined && hc !== null ? table[Math.max(0, Math.min(table.length - 1, Math.floor(hc)))] : null;
         if (!bestRecent && predicted === null) return;
         const recentHc = bestRecent ? hcOf(bestRecent) : null;
@@ -3256,10 +3398,7 @@
   // predicts on that round) at their handicap for that bow at the end of the
   // season, or today while the season is running. Each round uses the bow the
   // archer shot it with most often that season.
-  function handicapAt(m, bow, when) {
-    const list = (m.byBow[bow] || []).filter(function (e) { return e.hcRunning !== null && e.date <= when; });
-    return list.length ? list[list.length - 1].hcRunning : null;
-  }
+  function handicapAt(m, bow, when) { return hcpAt(m, bow, "indoor", when); }
   function quiverTable(year) {
     const r = winterRange(year);
     const when = r.to < state.now ? r.to : state.now;
@@ -3411,10 +3550,12 @@
     const improved = [];
     state.members.forEach(function (m) {
       Object.keys(m.byBow).forEach(function (b) {
-        const w = m.byBow[b].filter(function (e) { return inAward(e, k) && e.hcRunning !== null; });
-        if (w.length < 2) return;
-        const drop = w[0].hcRunning - w[w.length - 1].hcRunning;
-        if (drop > 0) improved.push({ m: m, v: drop, text: "down " + drop + " (" + b.toLowerCase() + ", " + w[0].hcRunning + " to " + w[w.length - 1].hcRunning + ")" });
+        ["outdoor", "indoor"].forEach(function (loc) {
+          const w = m.byBow[b].filter(function (e) { return e.loc === loc && inAward(e, k) && e.hcRunning !== null; });
+          if (w.length < 2) return;
+          const drop = w[0].hcRunning - w[w.length - 1].hcRunning;
+          if (drop > 0) improved.push({ m: m, v: drop, text: "down " + drop + " (" + b.toLowerCase() + " " + loc + ", " + w[0].hcRunning + " to " + w[w.length - 1].hcRunning + ")" });
+        });
       });
     });
     improved.sort(function (a, b) { return b.v - a.v; });
@@ -4021,20 +4162,23 @@
     state.members.forEach(function (m) {
       Object.keys(m.byBow).forEach(function (b) {
         if (!DISCIPLINE_COLOR[b]) return;
-        const run = m.byBow[b].filter(function (e) { return e.hcRunning !== null && e.date >= yearAgo; });
-        if (!run.length) return;
-        const last = run[run.length - 1];
-        if (!best[b] || last.hcRunning < best[b].e.hcRunning) best[b] = { m: m, e: last, n: 0 };
+        ["outdoor", "indoor"].forEach(function (loc) {
+          const run = m.byBow[b].filter(function (e) { return e.loc === loc && hcpCounts(e) && e.date >= yearAgo; });
+          if (!run.length) return;
+          const h = hcpNow(m, b, loc);
+          if (h === null) return;
+          if (!best[b] || h < best[b].h) best[b] = { m: m, e: run[run.length - 1], h: h, loc: loc };
+        });
       });
     });
     const bows = DISCIPLINE_ORDER.filter(function (b) { return best[b]; });
     if (!bows.length) return "";
     return '<div class="card"><div class="card-head"><div><div class="card-eyebrow">' + ICON.star + "Handicaps</div><h2>Lowest handicap by bow</h2>" +
-      '<p class="card-note">Current running handicaps, last 12 months. Lower is better.</p></div><a class="btn" href="#handicaps" data-nav-tab="handicaps">All</a></div><div class="bow-list">' +
+      '<p class="card-note">Current handicaps (outdoor or indoor, whichever is lower) for archers who have shot in the last 12 months. Lower is better.</p></div><a class="btn" href="#handicaps" data-nav-tab="handicaps">All</a></div><div class="bow-list">' +
       bows.map(function (b, i) {
         const x = best[b];
         return '<div class="bow-row" style="--i:' + i + '"><span class="bow-bar" style="background:var(' + DISCIPLINE_COLOR[b] + ')"></span><span style="min-width:0"><span class="bow-name">' + b +
-          '</span><span class="bow-sub" style="display:block">' + nameCell(x.m, x.e) + "</span></span>" + '<span class="bow-hc"><b>' + x.e.hcRunning + "</b><span>handicap</span></span></div>";
+          '</span><span class="bow-sub" style="display:block">' + nameCell(x.m, x.e) + "</span></span>" + '<span class="bow-hc"><b>' + x.h + "</b><span>" + x.loc + "</span></span></div>";
       }).join("") + "</div></div>";
   }
 
@@ -4200,7 +4344,15 @@
     if (p) p.innerHTML = subPreviewHtml();
     return true;
   }
-  panels.addEventListener("input", function (ev) { subField(ev); });
+  panels.addEventListener("input", function (ev) {
+    if (ev.target.matches("[data-one-end]")) {
+      state.oneEnd = ev.target.value;
+      const out = document.getElementById("oneEndOut");
+      if (out) out.innerHTML = oneEndHtml();
+      return;
+    }
+    subField(ev);
+  });
   panels.addEventListener("click", function (ev) {
     if (ev.target.closest("[data-sub-again]")) { delete state.sub.sent; render(); }
   });
