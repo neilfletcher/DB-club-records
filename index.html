@@ -2020,7 +2020,7 @@
     recent: { days: 90 },
     honours: { season: null, bow: "all" },
     hcp: { bow: "all", sort: "hcp", period: "12m", loc: "all" },
-    oneEnd: "",
+    oneEnd: { round: "frostbite", bow: "Recurve", per: 6, ends: 1, score: "" },
     pred: { hc: 50, bow: "Recurve", gender: "Open", age: "Adult", scope: "club" },
     sub: { bow: "Recurve", gender: "Men", age: "Adult" },
     badges: { bow: "all" },
@@ -2993,37 +2993,75 @@
   function hcpNow(m, bow, loc) { return hcpAt(m, bow, loc, state.now); }
   function locLabel(loc) { return loc === "indoor" ? "indoor" : "outdoor"; }
 
-  // Quick handicap for the Malcolm Wright Frostbite: an archer without a
-  // handicap is rated from their first scoring end(s), scaled up to the full
-  // 36 arrows of the Frostbite round.
-  function oneEndHandicap(text) {
-    const ends = String(text || "").split(/[^0-9]+/).filter(function (s) { return s !== ""; }).map(Number);
-    if (!ends.length) return null;
-    if (ends.length > 6 || ends.some(function (v) { return v > 60; })) return { error: "Enter up to six end scores, each out of 60." };
-    const info = AGB.round("frostbite");
-    if (!info) return { error: "The Frostbite tables aren't available." };
-    const total = ends.reduce(function (s, v) { return s + v; }, 0);
-    if (!total) return { error: "Enter a score above 0." };
-    const scaled = Math.round(total * info.a / (ends.length * 6));
-    const hc = AGB.handicapFor("frostbite", Math.min(info.max, scaled));
+  // Quick handicap from the first few ends, for handicapped shoots such as
+  // the Malcolm Wright Memorial Frostbite: an archer without a handicap is
+  // rated from the score of their first scoring ends (not sighters), scaled
+  // up to the full round. Works for any round and bow type (compound uses
+  // the round's compound scoring where it has one).
+  const OE_BOWS = ["Recurve", "Barebow", "Compound", "Longbow", "Flatbow"];
+  function oeCode(round, bow) {
+    return bow === "Compound" && AGB.round(round + "_compound") ? round + "_compound" : round;
+  }
+  function oeRoundOptions() {
+    const count = {};
+    state.entries.forEach(function (e) { const k = leagueRoundOf(e); if (k && !e.isLadder && !/^misc_/.test(k)) count[k] = (count[k] || 0) + 1; });
+    const ok = function (c) { const r = AGB.round(c); return r && r.a && r.table && !/^misc_|_compound|_triple|^frostbite_20$/.test(c); };
+    const club = Object.keys(count).filter(ok).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 15);
+    const all = Object.keys(window.AGB_DATA.rounds).filter(function (c) { return ok(c) && club.indexOf(c) === -1; })
+      .sort(function (a, b) { return AGB.round(a).n.localeCompare(AGB.round(b).n); });
+    return { club: club, all: all };
+  }
+  function oeState() {
+    const o = state.oneEnd;
+    if (!AGB.round(o.round)) o.round = "frostbite";
+    const r = AGB.round(o.round);
+    if (o.per !== 3 && o.per !== 6) o.per = r.loc === "indoor" ? 3 : 6;
+    if (r.a % o.per) o.per = r.a % 6 ? 3 : 6;
+    const maxEnds = r.a / o.per;
+    if (!(o.ends >= 1 && o.ends <= maxEnds)) o.ends = 1;
+    return { o: o, r: r, maxEnds: maxEnds };
+  }
+  function oneEndResult() {
+    const st = oeState(), o = st.o;
+    const code = oeCode(o.round, o.bow), info = AGB.round(code);
+    const arrows = o.ends * o.per, perArrow = info.max / info.a, top = Math.round(arrows * perArrow);
+    const raw = String(o.score || "").trim();
+    if (raw === "") return { empty: true, top: top, arrows: arrows };
+    const score = Number(raw);
+    if (!/^\d+$/.test(raw) || score > top) return { error: "Enter a whole number from 0 to " + top + " (the most " + plural(arrows, "arrow") + " can score)." };
+    if (!score) return { error: "Enter a score above 0." };
+    const scaled = Math.min(info.max, Math.round(score * info.a / arrows));
+    const hc = AGB.handicapFor(code, scaled);
     if (hc === null) return { error: "Couldn't work out a handicap for that score." };
-    return { ends: ends.length, total: total, scaled: scaled, hc: hc, predicted: info.table[hc], allowance: 1440 - info.table[hc] };
+    return { hc: hc, loc: info.loc, name: info.n, arrows: arrows, score: score, scaled: scaled, max: info.max, predicted: info.table[hc], allowance: 1440 - info.table[hc], compound: code !== o.round };
   }
   function oneEndHtml() {
-    const r = oneEndHandicap(state.oneEnd);
-    if (!r) return '<p class="muted">Enter the score of the first scoring end (not the sighters).</p>';
+    const r = oneEndResult();
+    if (r.empty) return '<p class="muted">Enter the total of those ends (out of ' + r.top + ").</p>";
     if (r.error) return '<p class="status-warn">' + escapeHtml(r.error) + "</p>";
     return '<div class="tile-row">' +
-      tile("Handicap", r.hc, "estimated outdoor") +
-      tile("Allowance", r.allowance, "added to the Frostbite score") +
-      tile("Predicted Frostbite", r.predicted, "out of 360 at this handicap") + "</div>" +
-      '<p class="card-note">From ' + r.ends + " end" + (r.ends === 1 ? "" : "s") + " (" + r.total + " points), scaled to " + r.scaled + " over 36 arrows. " +
-      "One end is a rough guide: a good or bad end moves it a lot, so use more ends when you can.</p>";
+      tile("Handicap", r.hc, "estimated " + r.loc) +
+      tile("Allowance", r.allowance, "added to the " + escapeHtml(r.name) + " score") +
+      tile("Predicted " + escapeHtml(r.name), r.predicted, "out of " + r.max + " at this handicap") + "</div>" +
+      '<p class="card-note">' + r.score + " from " + plural(r.arrows, "arrow") + ", scaled to " + r.scaled + " for the full round" + (r.compound ? " (compound scoring)" : "") + ". " +
+      "The fewer ends, the rougher the guide: one good or bad end moves it a lot.</p>";
   }
   function oneEndCard() {
-    return '<div class="card" id="oneEnd"><h2>Quick handicap from the first end</h2><p class="card-note">For a handicapped Frostbite such as the Malcolm Wright Memorial: an archer with no handicap can be given one from their first scoring end (not the sighters). ' +
-      "Archers who already have an outdoor handicap should use that (in the table above). You can enter more than one end, separated by commas.</p>" +
-      '<div class="controls-row"><label class="ctl">End score(s) <input type="text" inputmode="numeric" data-one-end value="' + escapeHtml(state.oneEnd || "") + '" placeholder="e.g. 42" style="width:9em"></label></div>' +
+    const st = oeState(), o = st.o, opts = oeRoundOptions();
+    const opt = function (v, label, cur) { return '<option value="' + escapeHtml(String(v)) + '"' + (String(v) === String(cur) ? " selected" : "") + ">" + escapeHtml(label) + "</option>"; };
+    const roundSel = '<select data-oe="round">' +
+      (opts.club.length ? '<optgroup label="Rounds the club shoots">' + opts.club.map(function (c) { return opt(c, AGB.round(c).n, o.round); }).join("") + "</optgroup>" : "") +
+      '<optgroup label="All Archery GB rounds">' + opts.all.map(function (c) { return opt(c, AGB.round(c).n, o.round); }).join("") + "</optgroup></select>";
+    const endsOpts = [];
+    for (let i = 1; i <= st.maxEnds; i++) endsOpts.push(opt(i, String(i), o.ends));
+    return '<div class="card" id="oneEnd"><h2>Quick handicap from the first ends</h2><p class="card-note">For a handicapped shoot such as the Malcolm Wright Memorial Frostbite: an archer with no handicap can be given one from their first scoring ends (not the sighters). ' +
+      "Choose the round, bow and how many ends to use, then enter the total of those ends. Archers who already have a handicap should use that (in the table above).</p>" +
+      '<div class="controls-row">' +
+      '<label class="ctl">Round ' + roundSel + "</label>" +
+      '<label class="ctl">Bow <select data-oe="bow">' + OE_BOWS.map(function (b) { return opt(b, b, o.bow); }).join("") + "</select></label>" +
+      '<label class="ctl">Arrows per end <select data-oe="per">' + [3, 6].filter(function (n) { return st.r.a % n === 0; }).map(function (n) { return opt(n, String(n), o.per); }).join("") + "</select></label>" +
+      '<label class="ctl">Ends <select data-oe="ends">' + endsOpts.join("") + "</select></label>" +
+      '<label class="ctl">Score <input type="text" inputmode="numeric" data-oe="score" value="' + escapeHtml(String(o.score || "")) + '" placeholder="total" style="width:6em"></label></div>' +
       '<div id="oneEndOut">' + oneEndHtml() + "</div></div>";
   }
 
@@ -4345,8 +4383,8 @@
     return true;
   }
   panels.addEventListener("input", function (ev) {
-    if (ev.target.matches("[data-one-end]")) {
-      state.oneEnd = ev.target.value;
+    if (ev.target.matches('[data-oe="score"]')) {
+      state.oneEnd.score = ev.target.value;
       const out = document.getElementById("oneEndOut");
       if (out) out.innerHTML = oneEndHtml();
       return;
@@ -4357,6 +4395,16 @@
     if (ev.target.closest("[data-sub-again]")) { delete state.sub.sent; render(); }
   });
   panels.addEventListener("change", function (ev) {
+    if (ev.target.matches("select[data-oe]")) {
+      const k = ev.target.dataset.oe, o = state.oneEnd;
+      o[k] = k === "per" || k === "ends" ? Number(ev.target.value) : ev.target.value;
+      if (k === "round") { o.per = 0; o.ends = 1; }
+      const card = document.getElementById("oneEnd");
+      if (card) card.outerHTML = oneEndCard();
+      const again = document.querySelector('select[data-oe="' + k + '"]');
+      if (again) again.focus();
+      return;
+    }
     if (subField(ev)) return;
     if (ev.target.matches("[data-pred]")) {
       const k = ev.target.dataset.pred;
