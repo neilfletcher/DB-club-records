@@ -2041,6 +2041,8 @@
 
   function roundLabel(key, sample) {
     if (key.indexOf("name:") === 0) return sample.round;
+    const ladder = /^misc_252_(\d+)$/.exec(key);
+    if (ladder) return "252 at " + ladder[1] + " yds";
     const r = AGB.round(key);
     return r ? r.n : sample.round;
   }
@@ -2138,7 +2140,7 @@
     // bow type and gender (adult open categories).
     const best = {};
     all.forEach(function (e) {
-      if (!e.round || e.score === null || e.isLadder || !DISCIPLINE_COLOR[e.bucket]) return;
+      if (!e.round || e.score === null || !DISCIPLINE_COLOR[e.bucket]) return;
       const k = roundKey(e) + "|" + e.bucket + "|" + e.gender2;
       if (best[k] !== undefined && e.score > best[k]) {
         e.events.push({ type: "record", text: "New club record: " + roundLabel(roundKey(e), e) + " " + e.bucket.toLowerCase() + " (" + e.gender2.toLowerCase() + "), " + e.score + " (was " + best[k] + ")" });
@@ -2160,7 +2162,7 @@
   function recordRows(f) {
     const groups = {};
     state.entries.forEach(function (e) {
-      if (!e.round || e.score === null || e.isLadder || e.bucket !== f.bow || e.loc !== f.loc) return;
+      if (!e.round || e.score === null || e.bucket !== f.bow || e.loc !== f.loc) return;
       if (f.gender !== "all" && e.gender2 !== f.gender) return;
       if (!juniorAgeOk(e, f)) return;
       if (f.period === "year" && e.date.getFullYear() !== state.now.getFullYear()) return;
@@ -2195,7 +2197,7 @@
     const rows = recordRows(f);
     let html = '<div class="card"><h2>Club records</h2><p class="card-note">Best score on each round, from the record keeper\'s sheets. ' +
       "Juniors can hold club records and have their own age-group records under Juniors. For safeguarding, archers under 18 are never named and show as \"" + JUNIOR + "\"; once they reach 18 their records, including those set as a junior, show their name. " +
-      "Triple-face and single-face versions of a round are counted together. 252 practice rounds are on the 252 badges tab. Click a round to see its record history. " +
+      "Triple-face and single-face versions of a round are counted together. 252 rounds have records at each distance too (badge progress is on the 252 badges tab). Click a round to see its record history. " +
       '<span class="badge ev ev-record">NEW</span> marks a record set in the last ' + NEW_RECORD_DAYS + " days.</p>";
     html += '<div class="controls-row">' +
       segButtons("rec.loc", [["outdoor", "Outdoor"], ["indoor", "Indoor"]], f.loc) +
@@ -2484,7 +2486,7 @@
   function currentRecords() {
     const best = {};
     state.entries.forEach(function (e) {
-      if (!e.round || e.score === null || e.isLadder || !DISCIPLINE_COLOR[e.bucket]) return;
+      if (!e.round || e.score === null || !DISCIPLINE_COLOR[e.bucket]) return;
       const k = roundKey(e) + "|" + e.bucket + "|" + e.gender2 + "|" + e.loc;
       const b = best[k];
       if (!b || e.score > b.score || (e.score === b.score && e.date < b.date)) best[k] = e;
@@ -3254,7 +3256,7 @@
     html += "</div>";
 
     // Softest: records representing the weakest handicap, on rounds people shoot.
-    const soft = records.filter(function (e) { return recordLevel(e) !== null; }).sort(function (a, b) { return recordLevel(a) - recordLevel(b) || hcOf(b) - hcOf(a); }).slice(0, 12);
+    const soft = records.filter(function (e) { return !e.isLadder && recordLevel(e) !== null; }).sort(function (a, b) { return recordLevel(a) - recordLevel(b) || hcOf(b) - hcOf(a); }).slice(0, 12);
     html += '<div class="card"><h2>Softest records</h2><p class="card-note">Records at the lowest Archery GB classification level for their bow type and gender: the easiest ones to beat. ' +
       "Levels compare across bow types (1 is Archer 3rd Class, 4 Bowman 3rd Class, 7 Master Bowman); the handicap alone doesn't, because each bow type's classes sit at different handicaps.</p>";
     if (!soft.length) html += '<p class="muted small">No records for this selection.</p>';
@@ -3305,7 +3307,7 @@
   // =====================================================================
   function recordHistory(key, f) {
     const list = state.entries.filter(function (e) {
-      if (!e.round || e.score === null || e.isLadder || e.bucket !== f.bow || e.loc !== f.loc || roundKey(e) !== key) return false;
+      if (!e.round || e.score === null || e.bucket !== f.bow || e.loc !== f.loc || roundKey(e) !== key) return false;
       if (f.gender !== "all" && e.gender2 !== f.gender) return false;
       if (!juniorAgeOk(e, f)) return false;
       return true;
