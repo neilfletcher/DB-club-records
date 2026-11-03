@@ -2841,7 +2841,8 @@
     if (a.data.role === "recorder") return html;
 
     const pend = a.data.pending || [];
-    if (Array.isArray(a.data.pending)) {
+    const sbLive = a.data.scorebook && a.data.scorebook.source === "scorebook";
+    if (Array.isArray(a.data.pending) && !sbLive) {
       const shown = {};
       (state.provisional || []).forEach(function (e) { shown[e.pid] = true; });
       html += '<div class="card"><h2>Scores sent in</h2><p class="card-note">Scores sent in with "Submit a score" in the last 60 days. Those matched to an adult member show on the site as provisional (leagues and Recent) until the record keeper adds them to the score sheet. ' +
