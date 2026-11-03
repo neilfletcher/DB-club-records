@@ -2935,6 +2935,16 @@
     else if (act === "dismiss") adminCall({ action: "dismiss", name: b.dataset.name });
     else if (act === "rebuild") adminCall({ action: "rebuild" });
     else if (act === "removePending") { if (window.confirm("Remove this score from the site? It stays in the Submissions tab.")) adminCall({ action: "removePending", id: b.dataset.id }); }
+    else if (act === "matchName") {
+      let to = "";
+      if (b.dataset.v === undefined) {
+        const sel = b.closest("tr") && b.closest("tr").querySelector("select[data-match-for]");
+        to = sel ? sel.value : "";
+        if (!to) { window.alert("Pick their name from the export first, or choose Lapsed."); return; }
+      }
+      adminCall({ action: "matchName", name: b.dataset.name, to: to });
+    }
+    else if (act === "lapsedName") adminCall({ action: "lapsedName", name: b.dataset.name, on: b.dataset.v === "1" });
     else if (act === "removeSheet") { if (window.confirm("Stop reading this sheet? (It isn't deleted from the Drive.)")) adminCall({ action: "removeSheet", id: b.dataset.id }); }
   });
 
@@ -4496,19 +4506,35 @@
   function mismatchCard(a) {
     const d = a.data || {}, ag = d.ages;
     if (!ag || !ag.ok || !Array.isArray(d.sheets)) return "";
-    const unmatched = d.sheets.filter(function (s) { return s.state === "ok" && s.age === "category" && s.name; });
-    const names = (ag.names || []).map(function (n) { return { n: n, k: normName(n) }; });
+    const nm = d.nameMatches || { links: {}, lapsed: {}, names: {} }, links = nm.links || {}, lapsed = nm.lapsed || {}, shown = nm.names || {};
+    const unmatched = d.sheets.filter(function (s) { return s.state === "ok" && s.age === "category" && s.name && !lapsed[normName(s.name)]; });
+    const names = (ag.names || []).map(function (n) { return { n: n, k: normName(n) }; }).sort(function (x, y) { return x.n.localeCompare(y.n); });
+    const dis = a.busy ? " disabled" : "";
     let html = '<div class="card"><h2>Names not in the member export</h2><p class="card-note">These score sheets didn\'t match anyone in the Archery GB member export, so their age is judged from the category on their scores rather than a date of birth. ' +
-      "Usually it's a spelling difference or a lapsed member. Correcting the name on either side lets the site check their age properly. Only adults' names from the export are listed as suggestions.</p>";
-    if (!unmatched.length) return html + '<p class="status-good">Every shown score sheet matched the export.</p></div>';
-    html += '<div class="table-scroll"><table><thead><tr><th>Score sheet name</th><th>Closest in the export</th></tr></thead><tbody>';
-    unmatched.sort(function (x, y) { return x.name.localeCompare(y.name); }).forEach(function (s) {
-      const k = normName(s.name), last = k.split(" ").pop();
-      const best = names.map(function (x) { return { n: x.n, d: nameDistance(k, x.k), same: x.k.split(" ").pop() === last }; })
-        .sort(function (p, q) { return (q.same - p.same) || p.d - q.d; })[0];
-      html += "<tr><td>" + escapeHtml(s.name) + "</td><td>" + (best && (best.same || best.d <= 3) ? escapeHtml(best.n) : '<span class="muted">No close match (lapsed?)</span>') + "</td></tr>";
-    });
-    return html + "</tbody></table></div></div>";
+      "If it's the same person under a different spelling, pick them and choose Same person: the site then uses their date of birth. If they've lapsed, choose Lapsed: their scores stay, they just leave this list. Only adults' names from the export can be picked.</p>";
+    if (!unmatched.length) html += '<p class="status-good">Nothing left to sort out.</p>';
+    else {
+      html += '<div class="table-wide-scroll"><table><thead><tr><th>Score sheet name</th><th>Same person in the export?</th><th></th></tr></thead><tbody>';
+      unmatched.sort(function (x, y) { return x.name.localeCompare(y.name); }).forEach(function (s) {
+        const k = normName(s.name), last = k.split(" ").pop();
+        const best = names.map(function (x) { return { n: x.n, d: nameDistance(k, x.k), same: x.k.split(" ").pop() === last }; })
+          .sort(function (p, q) { return (q.same - p.same) || p.d - q.d; })[0];
+        const pick = best && (best.same || best.d <= 3) ? best.n : "";
+        html += "<tr><td>" + escapeHtml(s.name) + '</td><td><select data-match-for="' + escapeHtml(s.name) + '" aria-label="Same person as ' + escapeHtml(s.name) + '"><option value="">' + (pick ? "Not in the export" : "No close match (lapsed?)") + "</option>" +
+          names.map(function (x) { return '<option value="' + escapeHtml(x.n) + '"' + (x.n === pick ? " selected" : "") + ">" + escapeHtml(x.n) + "</option>"; }).join("") + "</select></td>" +
+          '<td class="nowrap"><button type="button" class="btn" data-admin="matchName" data-name="' + escapeHtml(s.name) + '"' + dis + ">Same person</button> " +
+          '<button type="button" class="btn" data-admin="lapsedName" data-name="' + escapeHtml(s.name) + '" data-v="1"' + dis + ">Lapsed</button></td></tr>";
+      });
+      html += "</tbody></table></div>";
+    }
+    const lk = Object.keys(links), lp = Object.keys(lapsed);
+    if (lk.length || lp.length) {
+      html += '<details class="small"><summary>Sorted already (' + (lk.length + lp.length) + ")</summary><ul>" +
+        lk.sort().map(function (k) { return "<li>" + escapeHtml(shown[k] || k) + " is " + escapeHtml(links[k]) + ' <button type="button" class="btn" data-admin="matchName" data-name="' + escapeHtml(shown[k] || k) + '" data-v=""' + dis + ">Undo</button></li>"; }).join("") +
+        lp.sort().map(function (k) { return "<li>" + escapeHtml(lapsed[k]) + " has lapsed" + ' <button type="button" class="btn" data-admin="lapsedName" data-name="' + escapeHtml(lapsed[k]) + '" data-v=""' + dis + ">Undo</button></li>"; }).join("") +
+        "</ul></details>";
+    }
+    return html + "</div>";
   }
 
   // =====================================================================
