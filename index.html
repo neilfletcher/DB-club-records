@@ -932,8 +932,9 @@
   const LADDER_BADGE_SCORE = {
     Recurve:  { 20: 252, 30: 252, 40: 252, 50: 252, 60: 252, 80: 252, 100: 252 },
     Compound: { 20: 280, 30: 280, 40: 280, 50: 280, 60: 280, 80: 280, 100: 280 },
-    Longbow:  { 20: 164, 30: 164, 40: 164, 50: 100, 60: 100, 80: 80,  100: 80 },
-    Barebow:  { 20: 189, 30: 189, 40: 189, 50: 189, 60: 189, 80: 164, 100: 139 }
+    Longbow:  { 20: 120, 30: 120, 40: 100, 50: 100, 60: 100, 80: 80,  100: 80 },
+    Barebow:  { 20: 189, 30: 189, 40: 189, 50: 189, 60: 189, 80: 164, 100: 139 },
+    Flatbow:  { 20: 140, 30: 140, 40: 120, 50: 120, 60: 120, 80: 100, 100: 100 }
   };
   const LADDER_BADGE_DEFAULT = 252;
   const LADDER_BADGE_COUNT = 2;
@@ -2021,6 +2022,7 @@
     honours: { season: null, bow: "all" },
     hcp: { bow: "all", sort: "hcp", period: "12m", loc: "all" },
     oneEnd: { round: "frostbite", bow: "Recurve", per: 6, ends: 1, score: "" },
+    allow: { round: "frostbite", bow: "all", inactive: "" },
     pred: { hc: 50, bow: "Recurve", gender: "Open", age: "Adult", scope: "club" },
     sub: { bow: "Recurve", gender: "Men", age: "Adult" },
     badges: { bow: "all" },
@@ -2411,7 +2413,7 @@
       segButtons("hcp.loc", [["all", "Outdoor and indoor"], ["outdoor", "Outdoor"], ["indoor", "Indoor"]], f.loc) +
       segButtons("hcp.period", [["12m", "Last 12 months"], ["all", "Since 2023"]], f.period) +
       segButtons("hcp.sort", [["hcp", "Best handicap"], ["improved", "Most improved"]], f.sort) + "</div>";
-    if (!rows.length) return html + '<p class="muted">No handicaps ' + (all ? "since 2023 " : "in the last 12 months ") + "for this selection.</p></div>" + oneEndCard() + predictorCard();
+    if (!rows.length) return html + '<p class="muted">No handicaps ' + (all ? "since 2023 " : "in the last 12 months ") + "for this selection.</p></div>" + allowanceCard() + oneEndCard() + predictorCard();
     html += '<div class="table-wide-scroll"><table><thead><tr><th class="num">#</th><th>Archer</th><th>Bow type</th><th class="num">Handicap</th><th class="num">' + (all ? "Change since 2023" : "12-month change") + "</th>" +
       "<th>Best round" + (all ? " (since 2023)" : " (12 months)") + '</th><th class="num">Scores</th><th>Last score</th></tr></thead><tbody>';
     rows.forEach(function (r, i) {
@@ -2421,7 +2423,7 @@
         '</td><td class="num">' + r.shots + '</td><td class="nowrap">' + fmtDate(r.last) + (r.inactive ? ' <span class="badge" title="No score for this bow and location in the last 12 months">INACTIVE</span>' : "") + "</td></tr>";
     });
     html += "</tbody></table></div></div>";
-    return html + oneEndCard() + predictorCard();
+    return html + allowanceCard() + oneEndCard() + predictorCard();
   }
 
   // =====================================================================
@@ -3078,6 +3080,53 @@
       tile("Predicted " + escapeHtml(r.name), r.predicted, "out of " + r.max + " at this handicap") + "</div>" +
       '<p class="card-note">' + r.score + " from " + plural(r.arrows, "arrow") + ", scaled to " + r.scaled + " for the full round" + (r.compound ? " (compound scoring)" : "") + ". " +
       "The fewer ends, the rougher the guide: one good or bad end moves it a lot.</p>";
+  }
+  // Handicap allowances for one round (e.g. the handicapped Frostbite): every
+  // archer's current handicap for that round's location and bow, the
+  // allowance it gives (1440 minus the round's score at that handicap) and
+  // the score it predicts. Printable for the shooting line.
+  function allowanceRows() {
+    const a = state.allow, info = AGB.round(a.round);
+    if (!info) return [];
+    const yearAgo = new Date(state.now.getTime() - 365 * 864e5), loc = info.loc, rows = [];
+    state.members.forEach(function (m) {
+      if (m.junior || m.withheld) return;
+      Object.keys(m.byBow).forEach(function (b) {
+        if (!DISCIPLINE_COLOR[b] || (a.bow !== "all" && b !== a.bow)) return;
+        const shot = m.byBow[b].filter(function (e) { return e.loc === loc && hcpCounts(e); });
+        const active = shot.some(function (e) { return e.date >= yearAgo; });
+        if (!active && !a.inactive) return;
+        const hc = hcpNow(m, b, loc);
+        if (hc === null && !active) return;
+        const code = oeCode(a.round, b), r = AGB.round(code);
+        const pred = hc === null ? null : r.table[Math.min(hc, r.table.length - 1)];
+        rows.push({ m: m, bow: b, hc: hc, allowance: pred === null ? null : 1440 - pred, pred: pred, active: active });
+      });
+    });
+    return rows.sort(function (x, y) { return x.m.name.localeCompare(y.m.name) || x.bow.localeCompare(y.bow); });
+  }
+  function allowanceCard() {
+    const a = state.allow, opts = oeRoundOptions();
+    if (!AGB.round(a.round)) a.round = "frostbite";
+    const info = AGB.round(a.round), rows = allowanceRows();
+    const opt = function (v, label, cur) { return '<option value="' + escapeHtml(String(v)) + '"' + (String(v) === String(cur) ? " selected" : "") + ">" + escapeHtml(label) + "</option>"; };
+    let html = '<div class="card print-target" id="allowances"><h2>Handicap allowances: ' + escapeHtml(info.n) + '</h2><p class="card-note">Each archer\'s current ' + info.loc +
+      " handicap for that bow, the allowance it gives on this round (1440 minus the score the handicap predicts) and the predicted score. Add the allowance to the score shot to get the handicap-adjusted score. " +
+      "Archers with no handicap yet can be given one from their first ends with the quick handicap below. Juniors aren't listed by name; work theirs out with the quick handicap. As at " + fmtDate(state.now) + ".</p>" +
+      '<div class="controls-row no-print"><label class="ctl">Round <select data-allow="round">' +
+      (opts.club.length ? '<optgroup label="Rounds the club shoots">' + opts.club.map(function (c) { return opt(c, AGB.round(c).n, a.round); }).join("") + "</optgroup>" : "") +
+      '<optgroup label="All Archery GB rounds">' + opts.all.map(function (c) { return opt(c, AGB.round(c).n, a.round); }).join("") + "</optgroup></select></label>" +
+      segButtons("allow.bow", bowOptions(true), a.bow) +
+      segButtons("allow.inactive", [["", "Active in the last 12 months"], ["1", "Everyone"]], a.inactive ? "1" : "") +
+      '<button type="button" class="btn" data-print-allow>Print</button></div>';
+    if (!rows.length) return html + '<p class="muted">No archers with a ' + info.loc + " handicap for this selection.</p></div>";
+    html += '<div class="table-wide-scroll"><table><thead><tr><th>Archer</th><th>Bow</th><th class="num">Handicap</th><th class="num">Allowance</th><th class="num">Predicted score</th></tr></thead><tbody>' +
+      rows.map(function (r) {
+        return "<tr><td>" + escapeHtml(r.m.name) + (r.active ? "" : ' <span class="badge">INACTIVE</span>') + '</td><td class="nowrap">' + bowDot(r.bow) + r.bow +
+          '</td><td class="num">' + (r.hc === null ? '<span class="muted small">none yet</span>' : "<strong>" + r.hc + "</strong>") +
+          '</td><td class="num">' + (r.allowance === null ? "-" : r.allowance) + '</td><td class="num">' + (r.pred === null ? "-" : r.pred + ' <span class="muted small">/ ' + info.max + "</span>") + "</td></tr>";
+      }).join("") + "</tbody></table></div></div>";
+    return html;
   }
   function oneEndCard() {
     const st = oeState(), o = st.o, opts = oeRoundOptions();
@@ -4430,6 +4479,13 @@
     const c = ev.target.closest("[data-cert]");
     if (c && state.recRows) { const r = state.recRows[Number(c.dataset.cert)]; if (r) printCertificate(r.top[0]); return; }
     if (ev.target.closest("[data-print-board]")) { printBoard(); return; }
+    if (ev.target.closest("[data-print-allow]")) {
+      document.body.setAttribute("data-printing", "allowances");
+      const done = function () { document.body.removeAttribute("data-printing"); window.removeEventListener("afterprint", done); };
+      window.addEventListener("afterprint", done);
+      window.print();
+      return;
+    }
     if (ev.target.closest("[data-print-awards]")) {
       document.body.setAttribute("data-printing", "awards");
       const done = function () { document.body.removeAttribute("data-printing"); window.removeEventListener("afterprint", done); };
@@ -4462,6 +4518,14 @@
     if (ev.target.closest("[data-sub-again]")) { delete state.sub.sent; render(); }
   });
   panels.addEventListener("change", function (ev) {
+    if (ev.target.matches("select[data-allow]")) {
+      state.allow.round = ev.target.value;
+      const card = document.getElementById("allowances");
+      if (card) card.outerHTML = allowanceCard();
+      const again = document.querySelector("select[data-allow]");
+      if (again) again.focus();
+      return;
+    }
     if (ev.target.matches("select[data-oe]")) {
       const k = ev.target.dataset.oe, o = state.oneEnd;
       o[k] = k === "per" || k === "ends" ? Number(ev.target.value) : ev.target.value;
