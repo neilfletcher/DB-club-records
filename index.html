@@ -4043,7 +4043,15 @@
   // predicts on that round) at their handicap for that bow at the end of the
   // season, or today while the season is running. Each round uses the bow the
   // archer shot it with most often that season.
-  function handicapAt(m, bow, when) { return hcpAt(m, bow, "indoor", when); }
+  // Until an archer has an indoor handicap for the bow (three scores), the
+  // average of the indoor ratings they have so far stands in, rounded down
+  // like the real thing, and the score is marked.
+  function handicapAt(m, bow, when) {
+    const h = hcpAt(m, bow, "indoor", when);
+    if (h !== null) return { h: h, early: false };
+    const rs = (m.entries || []).filter(function (e) { return e.bucket === bow && e.loc === "indoor" && e.date <= when && hcpCounts(e) && hcOf(e) !== null; }).map(hcOf);
+    return rs.length ? { h: avgDown(rs), early: true, n: rs.length } : null;
+  }
   function quiverTable(year) {
     const r = winterRange(year);
     const when = r.to < state.now ? r.to : state.now;
@@ -4064,7 +4072,7 @@
         Object.keys(perBow).forEach(function (bow) {
           const list = perBow[bow];
           const top = list.reduce(function (a, b) { return b.score > a.score ? b : a; });
-          const h = handicapAt(x.m, bow, whenEnd);
+          const hh = handicapAt(x.m, bow, whenEnd), h = hh ? hh.h : null;
           const info = AGB.round(top.code);
           let adj = null;
           if (h !== null && info && info.table) {
@@ -4072,7 +4080,7 @@
             adj = top.score + 1440 - info.table[hi];
           } else if (top.hcAdjusted !== null) adj = top.hcAdjusted;
           if (adj === null) return;
-          const c = { e: top, bow: bow, n: list.length, adj: adj };
+          const c = { e: top, bow: bow, n: list.length, adj: adj, early: !!(hh && hh.early && h !== null && info && info.table), h: h };
           if (!pick || c.n > pick.n || (c.n === pick.n && c.adj > pick.adj)) pick = c;
         });
         return pick;
@@ -4085,11 +4093,11 @@
 
   function quiverCard(year) {
     const rows = quiverTable(year);
-    let html = '<div class="card league"><h2>Quiver Shiver</h2><p class="card-note">Handicap adjusted: the best score on each of the four rounds plus the handicap allowance at the archer\'s handicap for that bow at the end of the season (their current handicap while the season is running), added together. Archers who have shot all four rounds are listed first. * includes a provisional score.</p>';
+    let html = '<div class="card league"><h2>Quiver Shiver</h2><p class="card-note">Handicap adjusted: the best score on each of the four rounds plus the handicap allowance at the archer\'s handicap for that bow at the end of the season (their current handicap while the season is running), added together. Archers who have shot all four rounds are listed first. * includes a provisional score. † no indoor handicap with that bow yet, so the average of their indoor scores\' handicaps so far is used.</p>';
     if (!rows.length) return html + '<p class="muted small">No scores yet this season.</p></div>';
     html += '<div class="table-wide-scroll"><table><thead><tr><th>Archer</th>' + QUIVER_ROUNDS.map(function (q) { return '<th class="num">' + q[0] + "</th>"; }).join("") + '<th class="num">Total</th></tr></thead><tbody>';
     rows.forEach(function (x) {
-      html += "<tr><td>" + nameCell(x.m, (x.best.filter(Boolean)[0] || {}).e) + "</td>" + x.best.map(function (c) { return '<td class="num">' + (c ? '<span title="' + c.bow + " " + c.e.score + (c.e.provisional ? " (provisional)" : "") + '">' + bowDot(c.bow) + c.adj + (c.e.provisional ? "*" : "") + "</span>" : '<span class="muted">-</span>') + "</td>"; }).join("") +
+      html += "<tr><td>" + nameCell(x.m, (x.best.filter(Boolean)[0] || {}).e) + "</td>" + x.best.map(function (c) { return '<td class="num">' + (c ? '<span title="' + c.bow + " " + c.e.score + (c.e.provisional ? " (provisional)" : "") + (c.early ? ", handicap " + c.h + " from fewer than three scores" : "") + '">' + bowDot(c.bow) + c.adj + (c.e.provisional ? "*" : "") + (c.early ? "†" : "") + "</span>" : '<span class="muted">-</span>') + "</td>"; }).join("") +
         '<td class="num"><strong>' + x.total + "</strong>" + (x.count < 4 ? ' <span class="muted small">(' + x.count + "/4)</span>" : "") + "</td></tr>";
     });
     return html + "</tbody></table></div></div>";
