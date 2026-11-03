@@ -926,6 +926,7 @@
 
   // The "252" practice ladder: a fixed round shot at increasing distances.
   const LADDER_DISTANCES = [20, 30, 40, 50, 60, 80, 100];
+  const TRACKER_URL = "https://neilfletcher.github.io/DB-archery-dashboard/";
   const LADDER_RE = /^252 attempt at (\d+)\s*yds?$/i;
   // A 252 badge at a distance is earned once the qualifying score for that bow
   // type and distance has been shot on LADDER_BADGE_COUNT separate occasions.
@@ -1208,6 +1209,7 @@
       score: score, classification: classification, classRank: classRank, classDerived: classDerived,
       hcRound: hcRound, hcRunning: num(row[7]), hcAllowance: num(row[8]), hcAdjusted: num(row[9]),
       comment: comment, placing: placingOf(comment), recordStatus: /record status/i.test(comment),
+      event: String(row[11] || "").trim(), roundNo: num(row[12]),
       events: []
     };
   }
@@ -2150,6 +2152,9 @@
       if (best[k] === undefined || e.score > best[k]) best[k] = e.score;
     });
 
+    state.eventGroups = buildEventGroups(all);
+    addEventRecordEvents(state.eventGroups);
+
     state.members = members.filter(function (m) { return !m.withheld; });
     state.entries = all;
     state.visible = all.filter(function (e) { return !e.member.withheld; });
@@ -2212,7 +2217,7 @@
       (f.age === "junior" ? '<div class="controls-row">' + segButtons("rec.jage", ages.map(function (a) { return [a, a === "Junior" ? "Age not given" : "Under " + a.slice(1)]; }), f.jage) + "</div>" : "");
     if (!rows.length) {
       html += '<p class="muted">No ' + f.loc + " " + f.bow.toLowerCase() + " scores for this selection.</p></div>";
-      return html;
+      return html + eventRecordsCard(f);
     }
     html += '<div class="table-wide-scroll"><table><thead><tr><th>Round</th><th class="num">Record</th><th>Held by</th><th>Date</th><th class="num">Hcp</th>' +
       '<th>Next best</th><th class="num">Shot</th></tr></thead><tbody>';
@@ -2231,7 +2236,7 @@
       if (open) html += '<tr class="hist-row"><td colspan="7">' + historyHtml(r.key, f) + "</td></tr>";
     });
     html += "</tbody></table></div></div>";
-    return html;
+    return html + eventRecordsCard(f);
   }
 
   // =====================================================================
@@ -2822,7 +2827,7 @@
     }
     const a = state.admin;
     if (!a || !a.token) {
-      html += '<p class="card-note">Sign in with your Google account to manage who is shown on the site.</p>' +
+      html += '<p class="card-note">Sign in with your Google account to manage the site (admins) or the score book (the record keeper).</p>' +
         (a && a.error ? '<p class="status-warn">' + escapeHtml(a.error) + "</p>" : "") +
         '<div id="gsiButton" style="min-height:44px"></div></div>';
       return html;
@@ -2830,6 +2835,10 @@
     html += '<p class="card-note">Signed in as <strong>' + escapeHtml(a.email || "…") + '</strong> · <button type="button" class="linkish" data-admin="signout">Sign out</button></p>' +
       (a.busy ? '<p class="muted small">Working…</p>' : "") + (a.msg ? '<p class="status-warn">' + escapeHtml(a.msg) + "</p>" : "") + "</div>";
     if (!a.data) return html;
+    rkInit();
+    html += scoreBookCards(a);
+    html += badgeCard();
+    if (a.data.role === "recorder") return html;
 
     const pend = a.data.pending || [];
     if (Array.isArray(a.data.pending)) {
@@ -3146,6 +3155,469 @@
       '<label class="ctl">Score <input type="text" inputmode="numeric" data-oe="score" value="' + escapeHtml(String(o.score || "")) + '" placeholder="total" style="width:6em"></label></div>' +
       '<div id="oneEndOut">' + oneEndHtml() + "</div></div>";
   }
+
+  // =====================================================================
+  // Multi-round events (doubles, triples, mixed rounds): an archer's rounds
+  // on one day carrying the same event name. Club records are kept for the
+  // total, grouped by the combination of rounds.
+  // =====================================================================
+  function eventCombo(list) {
+    const c = {};
+    list.forEach(function (e) { const k = roundKey(e); c[k] = c[k] || { n: 0, label: roundLabel(k, e) }; c[k].n++; });
+    const keys = Object.keys(c).sort(function (a, b) { return c[a].label.localeCompare(c[b].label); });
+    const word = function (n) { return n === 2 ? "Double " : n === 3 ? "Triple " : n > 3 ? n + " × " : ""; };
+    return { key: keys.map(function (k) { return c[k].n + "x" + k; }).join("+"), label: keys.map(function (k) { return word(c[k].n) + c[k].label; }).join(" + ") };
+  }
+  function buildEventGroups(entries) {
+    const by = {};
+    entries.forEach(function (e) {
+      if (!e.event || e.score === null || !e.round) return;
+      const k = e.member.id + "|" + e.date.getTime() + "|" + e.event.toLowerCase();
+      (by[k] = by[k] || []).push(e);
+    });
+    const out = [];
+    Object.keys(by).forEach(function (k) {
+      const list = by[k];
+      if (list.length < 2) return;
+      const bows = new Set(list.map(function (e) { return e.bucket; }));
+      if (bows.size !== 1 || !DISCIPLINE_COLOR[list[0].bucket]) return;
+      list.sort(function (a, b) { return (a.roundNo || 0) - (b.roundNo || 0); });
+      const combo = eventCombo(list), first = list[0];
+      const locs = new Set(list.map(function (e) { return e.loc; }));
+      out.push({ member: first.member, date: first.date, event: first.event, bucket: first.bucket, gender2: first.gender2, ageGroup: first.ageGroup,
+        loc: locs.size === 1 ? first.loc : "outdoor", rounds: list, total: list.reduce(function (s, e) { return s + e.score; }, 0), key: combo.key, label: combo.label, first: first });
+    });
+    return out.sort(function (a, b) { return a.date - b.date; });
+  }
+  // Record events for event totals (shown on Recent like single-round records).
+  function addEventRecordEvents(groups) {
+    const best = {};
+    groups.forEach(function (g) {
+      // One podium for the event, not one per round.
+      const pod = g.rounds.map(function (e) { return e.events.filter(function (ev) { return ev.type === "podium"; })[0]; }).filter(Boolean)[0];
+      g.rounds.forEach(function (e) { e.events = e.events.filter(function (ev) { return ev.type !== "podium"; }); });
+      if (pod) g.first.events.push({ type: "podium", text: ordinal(g.first.placing) + " place (" + g.event + ")" });
+      const k = g.key + "|" + g.bucket + "|" + g.gender2;
+      if (best[k] !== undefined && g.total > best[k]) {
+        g.first.events.push({ type: "record", text: "New club record: " + g.label + " " + g.bucket.toLowerCase() + " (" + g.gender2.toLowerCase() + "), " + g.total + " (was " + best[k] + ")" });
+      }
+      if (best[k] === undefined || g.total > best[k]) best[k] = g.total;
+    });
+  }
+  function eventRecordRows(f) {
+    const groups = {};
+    (state.eventGroups || []).forEach(function (g) {
+      if (g.bucket !== f.bow || g.loc !== f.loc) return;
+      if (f.gender !== "all" && g.gender2 !== f.gender) return;
+      if (!juniorAgeOk(g.first, f)) return;
+      if (f.period === "year" && g.date.getFullYear() !== state.now.getFullYear()) return;
+      if (f.period === "12m" && !within(g.first, 365)) return;
+      (groups[g.key] = groups[g.key] || []).push(g);
+    });
+    return Object.keys(groups).map(function (k) {
+      const list = groups[k].slice().sort(function (a, b) { return b.total - a.total || a.date - b.date; });
+      const seen = {}, top = [];
+      list.forEach(function (g) { if (!seen[g.member.id] && top.length < 3) { seen[g.member.id] = true; top.push(g); } });
+      return { key: k, label: list[0].label, top: top, shot: list.length, list: groups[k] };
+    }).sort(function (a, b) { return b.shot - a.shot || a.label.localeCompare(b.label); });
+  }
+  function eventRecordsCard(f) {
+    const rows = eventRecordRows(f);
+    state.evRows = rows;
+    let html = '<div class="card"><h2>Multi-round records</h2><p class="card-note">Club records for the total of a competition shot as several rounds in one day: doubles, triples and mixed rounds, ' +
+      "grouped by the rounds shot (whatever the event was called). Each round also counts on its own in the table above. Click one to see its record history.</p>";
+    if (!rows.length) return html + '<p class="muted small">No multi-round events for this selection yet.</p></div>';
+    html += '<div class="table-wide-scroll"><table><thead><tr><th>Rounds</th><th class="num">Record</th><th>Held by</th><th>Event</th><th>Date</th><th>Next best</th><th class="num">Shot</th></tr></thead><tbody>';
+    rows.forEach(function (r, idx) {
+      const g = r.top[0], open = state.rec.openEv === r.key;
+      html += '<tr class="rec-row' + (open ? " open" : "") + '"><td><button type="button" class="linkish rec-toggle" data-evhist="' + escapeHtml(r.key) + '" aria-expanded="' + open + '">' + escapeHtml(r.label) + "</button></td>" +
+        '<td class="num"><strong>' + g.total + "</strong>" + (within(g.first, NEW_RECORD_DAYS) ? ' <span class="badge ev ev-record">NEW</span>' : "") + '<br><span class="muted small">' +
+        g.rounds.map(function (e) { return e.score; }).join(" + ") + "</span></td><td>" + nameCell(g.member, g.first) +
+        (g.member.withheld ? "" : ' <button type="button" class="linkish small no-print" data-evcert="' + idx + '" title="Print a record certificate">Certificate</button>') +
+        "</td><td>" + escapeHtml(g.event) + '</td><td class="nowrap">' + fmtDate(g.date) + "</td><td>" +
+        r.top.slice(1).map(function (x) { return escapeHtml(x.member.name) + " " + x.total; }).join('<span class="muted"> · </span>') + '</td><td class="num">' + r.shot + "</td></tr>";
+      if (open) {
+        const hist = r.list.slice().sort(function (a, b) { return a.date - b.date; });
+        let bestSoFar = -1;
+        const steps = hist.filter(function (g2) { if (g2.total > bestSoFar) { bestSoFar = g2.total; return true; } return false; }).reverse();
+        html += '<tr class="hist-row"><td colspan="7"><ul class="plain">' + steps.map(function (g2) {
+          return "<li>" + fmtDate(g2.date) + ": <strong>" + g2.total + "</strong> " + nameCell(g2.member, g2.first) + ' <span class="muted small">' + escapeHtml(g2.event) + "</span></li>";
+        }).join("") + "</ul></td></tr>";
+      }
+    });
+    return html + "</tbody></table></div></div>";
+  }
+  function printEventCertificate(g) {
+    printCertificate({ member: g.member, date: g.date, bucket: g.bucket, gender2: g.gender2, loc: g.loc, score: g.total, round: g.label, code: null });
+  }
+
+  // =====================================================================
+  // Badges: Frostbite, Portsmouth and Worcester quiver badges for the best
+  // score of the winter season (same values for every bow; only listed when
+  // better than the badge the archer earned in an earlier season), and 252
+  // badges the first time each distance is earned.
+  // =====================================================================
+  const QUIVER_BADGES = {
+    frostbite: { name: "Frostbite", values: [100, 150, 200, 225, 250, 275, 300, 315, 330, 340, 350, 355] },
+    portsmouth: { name: "Portsmouth", values: [100, 150, 200, 250, 300, 325, 350, 375, 400, 425, 450, 475, 500, 525, 550, 575, 580, 585, 590, 595, 600] },
+    worcester: { name: "Worcester", values: [100, 125, 150, 175, 200, 225, 250, 265, 275, 285, 295, 300] }
+  };
+  function badgeFor(values, score) {
+    let b = null;
+    values.forEach(function (v) { if (score >= v) b = v; });
+    return b;
+  }
+  // list: [{ name, date, bow, code, ladderDist, score }] (names from the score
+  // book for the record keeper; otherwise the site's own entries).
+  function badgeReport(list, year) {
+    const r = winterRange(year), prevEnd = winterRange(year - 1).to;
+    const people = {};
+    const who = function (n) { return (people[n] = people[n] || { name: n, quiver: [], ladder: [] }); };
+    Object.keys(QUIVER_BADGES).forEach(function (k) {
+      const def = QUIVER_BADGES[k], best = {}, before = {};
+      list.forEach(function (x) {
+        const rk = x.code ? x.code.replace(/_compound|_triple/g, "").replace(/^worcester_5_centre$/, "worcester") : null;
+        if (rk !== k || x.score === null) return;
+        if (x.date >= r.from && x.date <= r.to) { if (!best[x.name] || x.score > best[x.name].score) best[x.name] = x; }
+        else if (x.date < r.from && winterOf(x.date) !== null) { if (before[x.name] === undefined || x.score > before[x.name]) before[x.name] = x.score; }
+      });
+      Object.keys(best).forEach(function (n) {
+        const b = badgeFor(def.values, best[n].score);
+        if (b === null) return;
+        const had = before[n] !== undefined ? badgeFor(def.values, before[n]) : null;
+        if (had !== null && had >= b) return;
+        who(n).quiver.push({ badge: def.name + " " + b, score: best[n].score, date: best[n].date, bow: best[n].bow, had: had });
+      });
+    });
+    // 252: earned when the qualifying score for the bow is shot twice at a
+    // distance; listed the first time an archer earns that distance.
+    const quals = {}, earned = {};
+    list.slice().sort(function (a, b) { return a.date - b.date; }).forEach(function (x) {
+      if (!x.ladderDist || x.score === null) return;
+      const t = (LADDER_BADGE_SCORE[x.bow] || {})[x.ladderDist] || LADDER_BADGE_DEFAULT;
+      if (x.score < t) return;
+      const k = x.name + "|" + x.ladderDist + "|" + x.bow;
+      quals[k] = (quals[k] || 0) + 1;
+      const ek = x.name + "|" + x.ladderDist;
+      if (quals[k] === LADDER_BADGE_COUNT && !earned[ek]) earned[ek] = x;
+    });
+    Object.keys(earned).forEach(function (ek) {
+      const x = earned[ek];
+      if (x.date > prevEnd && x.date <= r.to) who(x.name).ladder.push({ badge: "252 at " + x.ladderDist + " yds", date: x.date, bow: x.bow });
+    });
+    return Object.keys(people).map(function (n) { return people[n]; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
+  }
+  function badgeSource() {
+    const sb = state.admin && state.admin.data && state.admin.data.scorebook;
+    if (sb && sb.source === "scorebook") {
+      return sb.scores.filter(function (s) { return s.status === ""; }).map(function (s) {
+        const d = s.date.split("-"), date = new Date(+d[0], +d[1] - 1, +d[2]);
+        const ladder = /^252\s*(?:attempt\s*at\s*)?(\d+)\s*y/i.exec(s.round);
+        return { name: s.archer, date: date, bow: s.bow, code: AGB.roundCode(s.round, s.bow), ladderDist: ladder ? Number(ladder[1]) : null, score: s.score };
+      });
+    }
+    return state.entries.map(function (e) { return { name: e.member.name, date: e.date, bow: e.bucket, code: e.code, ladderDist: e.isLadder ? e.ladderDist : null, score: e.score }; });
+  }
+  function badgeCard() {
+    const seasons = leagueSeasons();
+    if (!seasons.length) return "";
+    const rk = state.rk;
+    if (seasons.indexOf(rk.badgeYear) === -1) rk.badgeYear = seasons[0];
+    const rows = badgeReport(badgeSource(), rk.badgeYear);
+    const counts = {};
+    rows.forEach(function (p) { p.quiver.concat(p.ladder).forEach(function (b) { counts[b.badge] = (counts[b.badge] || 0) + 1; }); });
+    let html = '<div class="card print-target" id="badgeReport"><h2>Badge report: ' + escapeHtml(winterLabel(rk.badgeYear)) + "</h2>" +
+      '<p class="card-note">Frostbite, Portsmouth and Worcester quiver badges for each archer\'s best score of the winter season (the same values for every bow), listed only when better than the badge their best score in an earlier winter would have earned. ' +
+      "252 badges are listed the first time an archer earns a distance (the qualifying score shot twice), between the end of last winter and the end of this one." +
+      (state.admin.data.scorebook && state.admin.data.scorebook.source === "scorebook" ? "" : " Until the score book is live, juniors show without names here.") + "</p>" +
+      '<div class="controls-row no-print"><label class="ctl">Season <select data-rk-badge>' + seasons.map(function (s) {
+        return '<option value="' + s + '"' + (s === rk.badgeYear ? " selected" : "") + ">" + winterLabel(s) + "</option>";
+      }).join("") + '</select></label><button type="button" class="btn" data-print-badges>Print</button></div>';
+    if (!rows.length) return html + '<p class="muted">No badges earned in this season yet.</p></div>';
+    html += '<div class="table-wide-scroll"><table><thead><tr><th>Archer</th><th>Badges</th></tr></thead><tbody>' + rows.map(function (p) {
+      return "<tr><td>" + escapeHtml(p.name) + "</td><td>" + p.quiver.map(function (b) {
+        return "<strong>" + escapeHtml(b.badge) + '</strong> <span class="muted small">(' + b.score + " " + b.bow.toLowerCase() + ", " + fmtDate(b.date) + (b.had !== null ? "; had " + b.had : "") + ")</span>";
+      }).concat(p.ladder.map(function (b) {
+        return "<strong>" + escapeHtml(b.badge) + '</strong> <span class="muted small">(' + b.bow.toLowerCase() + ", " + fmtDate(b.date) + ")</span>";
+      })).join("<br>") + "</td></tr>";
+    }).join("") + "</tbody></table></div>" +
+      '<h3>To hand out</h3><p class="small">' + Object.keys(counts).sort().map(function (k) { return escapeHtml(k) + " × " + counts[k]; }).join(" · ") + "</p></div>";
+    return html;
+  }
+
+  // =====================================================================
+  // Record keeper: the score book (Site admin, signed in as an admin or the
+  // record keeper)
+  // =====================================================================
+  const RK_CATEGORIES = ["Male Senior", "Female Senior", "Male 50+", "Female 50+", "Male U21", "Female U21", "Male U18", "Female U18", "Male U16", "Female U16",
+    "Male U15", "Female U15", "Male U14", "Female U14", "Male U12", "Female U12"];
+  const RK_BOWS = ["Recurve", "Barebow", "Compound", "Longbow", "Flatbow"];
+  function rkToday() { const d = state.now || new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
+  function rkOpt(v, label, cur) { return '<option value="' + escapeHtml(String(v)) + '"' + (String(v) === String(cur) ? " selected" : "") + ">" + escapeHtml(label) + "</option>"; }
+  function rkLatest(name) {
+    const sb = state.admin.data.scorebook, k = normName(name || "");
+    let best = null;
+    (sb.scores || []).forEach(function (s) { if (normName(s.archer) === k && (!best || s.date > best.date)) best = s; });
+    return best;
+  }
+  function rkLists(sb) {
+    const rounds = {};
+    (sb.scores || []).forEach(function (s) { rounds[s.round] = (rounds[s.round] || 0) + 1; });
+    const list = Object.keys(rounds).sort(function (a, b) { return rounds[b] - rounds[a]; });
+    return '<datalist id="rkArchers">' + (sb.archers || []).map(function (n) { return '<option value="' + escapeHtml(n) + '">'; }).join("") + "</datalist>" +
+      '<datalist id="rkRounds">' + list.map(function (n) { return '<option value="' + escapeHtml(n) + '">'; }).join("") + "</datalist>";
+  }
+  function rkWho(by) {
+    if (/^member/i.test(by)) return "Member";
+    if (/^keeper/i.test(by)) return "Record keeper";
+    if (/^import/i.test(by)) return "Imported";
+    return "Sheet";
+  }
+
+  function scoreBookCards(a) {
+    const sb = a.data.scorebook;
+    if (!sb) return "";
+    const isAdmin = a.data.role !== "recorder", live = sb.source === "scorebook", rk = state.rk;
+    let html = '<div class="card"><h2>Score book</h2><p class="card-note">' + (live
+      ? "The site reads the club's score book: scores recorded here, sent in by members, or typed straight into the score book sheet show within a minute or so. "
+      : "The site still reads the record keeper's workbooks. Import them into the score book, try it out, then switch the site over when you're happy. ") +
+      sb.rows + " scores, " + (sb.archers || []).length + " archers" + (sb.importedAt ? "; last imported " + fmtDate(new Date(sb.importedAt)) : "") + "." +
+      (sb.url ? ' <a href="' + escapeHtml(sb.url) + '" target="_blank" rel="noopener">Open the score book sheet</a>.' : "") + "</p>" +
+      (isAdmin ? '<div class="controls-row">' +
+        '<button type="button" class="btn" data-rk="import"' + (a.busy ? " disabled" : "") + ">" + (sb.rows ? "Import again from the workbooks" : "Import from the workbooks") + "</button>" +
+        (live ? '<button type="button" class="btn" data-rk="source" data-v="sheets"' + (a.busy ? " disabled" : "") + ">Switch back to the workbooks</button>"
+          : '<button type="button" class="btn" data-rk="source" data-v="scorebook"' + (a.busy || !sb.rows ? " disabled" : "") + ">Switch the site to the score book</button>") +
+        '<button type="button" class="btn" data-rk="check"' + (a.busy ? " disabled" : "") + ">Check new scores now</button></div>" +
+        (live ? '<p class="small status-warn">Importing again replaces everything in the score book, including scores entered since the switch.</p>' : "") : "") + "</div>";
+    if (!live && !sb.rows) return html;
+
+    // Record a score / a competition.
+    html += '<div class="card"><h2>Record scores</h2>' + rkLists(sb) + '<div class="controls-row">' +
+      segButtons("rk.mode", [["score", "One score"], ["event", "A competition"]], rk.mode) + "</div>";
+    if (!live) html += '<p class="small status-warn">The site isn\'t reading the score book yet, so scores recorded here won\'t show until it is switched over (and importing again would replace them).</p>';
+    if (rk.mode === "score") {
+      const f = rk.form;
+      html += '<form id="rkScore" class="sub-form"><div class="controls-row">' +
+        '<label class="ctl">Archer <input type="text" list="rkArchers" data-rkf="archer" value="' + escapeHtml(f.archer || "") + '" autocomplete="off" required></label>' +
+        '<label class="ctl">Date <input type="date" data-rkf="date" value="' + escapeHtml(f.date || rkToday()) + '" required></label>' +
+        '<label class="ctl">Category <select data-rkf="category">' + RK_CATEGORIES.map(function (c) { return rkOpt(c, c, f.category || "Male Senior"); }).join("") + "</select></label>" +
+        '<label class="ctl">Bow <select data-rkf="bow">' + RK_BOWS.map(function (b) { return rkOpt(b, b, f.bow || "Recurve"); }).join("") + "</select></label></div>" +
+        '<div class="controls-row"><label class="ctl">Round <input type="text" list="rkRounds" data-rkf="round" value="' + escapeHtml(f.round || "") + '" autocomplete="off" required></label>' +
+        '<label class="ctl">Score <input type="number" min="0" step="1" inputmode="numeric" data-rkf="score" value="' + escapeHtml(f.score || "") + '" style="width:6em" required></label>' +
+        '<label class="ctl">Hits <input type="number" min="0" step="1" data-rkf="hits" value="' + escapeHtml(f.hits || "") + '" style="width:5em"></label>' +
+        '<label class="ctl">Golds <input type="number" min="0" step="1" data-rkf="golds" value="' + escapeHtml(f.golds || "") + '" style="width:5em"></label>' +
+        '<label class="ctl">Placing <input type="text" data-rkf="placing" value="' + escapeHtml(f.placing || "") + '" style="width:5em"></label></div>' +
+        '<div class="controls-row"><label class="ctl" style="flex:1">Notes <input type="text" data-rkf="notes" value="' + escapeHtml(f.notes || "") + '" style="width:100%"></label></div>' +
+        '<div class="controls-row"><button type="submit" class="btn btn-primary"' + (a.busy ? " disabled" : "") + ">Save score</button>" +
+        (rk.saved ? '<span class="status-good small">' + escapeHtml(rk.saved) + "</span>" : "") + "</div></form>";
+    } else {
+      const ev = rk.ev;
+      html += '<form id="rkEvent" class="sub-form"><div class="controls-row">' +
+        '<label class="ctl" style="flex:1">Event <input type="text" data-rke="event" value="' + escapeHtml(ev.event || "") + '" placeholder="e.g. David Clarke Memorial Indoor Open Triple" style="width:100%" required></label>' +
+        '<label class="ctl">Date <input type="date" data-rke="date" value="' + escapeHtml(ev.date || rkToday()) + '" required></label>' +
+        '<label class="ctl">Rounds <select data-rke="n">' + [1, 2, 3, 4, 5, 6].map(function (n) { return rkOpt(n, String(n), ev.rounds.length); }).join("") + "</select></label></div>" +
+        '<div class="controls-row">' + ev.rounds.map(function (r, i) {
+          return '<label class="ctl">Round ' + (i + 1) + ' <input type="text" list="rkRounds" data-rke="round" data-i="' + i + '" value="' + escapeHtml(r || "") + '" autocomplete="off" required></label>';
+        }).join("") + "</div>" +
+        '<div class="table-wide-scroll"><table><thead><tr><th>Archer</th><th>Category</th><th>Bow</th>' + ev.rounds.map(function (r, i) { return '<th class="num">' + escapeHtml(r || "Round " + (i + 1)) + "</th>"; }).join("") +
+        '<th class="num">Total</th><th>Placing</th></tr></thead><tbody>' + ev.entries.map(function (en, j) {
+          const total = en.scores.reduce(function (s, v) { return s + (Number(v) || 0); }, 0);
+          return '<tr><td><input type="text" list="rkArchers" data-rkr="archer" data-j="' + j + '" value="' + escapeHtml(en.archer || "") + '" autocomplete="off" style="width:10em"></td>' +
+            '<td><select data-rkr="category" data-j="' + j + '" style="min-width:8.5em">' + RK_CATEGORIES.map(function (c) { return rkOpt(c, c, en.category || "Male Senior"); }).join("") + "</select></td>" +
+            '<td><select data-rkr="bow" data-j="' + j + '" style="min-width:7em">' + RK_BOWS.map(function (b) { return rkOpt(b, b, en.bow || "Recurve"); }).join("") + "</select></td>" +
+            ev.rounds.map(function (r, i) { return '<td class="num"><input type="number" min="0" step="1" inputmode="numeric" data-rkr="score" data-j="' + j + '" data-i="' + i + '" value="' + escapeHtml(en.scores[i] || "") + '" style="width:4.5em"></td>'; }).join("") +
+            '<td class="num" data-rk-total="' + j + '">' + (total || "") + '</td><td><input type="text" data-rkr="placing" data-j="' + j + '" value="' + escapeHtml(en.placing || "") + '" style="width:4em"></td></tr>';
+        }).join("") + "</tbody></table></div>" +
+        '<div class="controls-row"><button type="button" class="btn" data-rk="addRow">Add archer</button>' +
+        '<button type="submit" class="btn btn-primary"' + (a.busy ? " disabled" : "") + ">Save competition</button>" +
+        (rk.saved ? '<span class="status-good small">' + escapeHtml(rk.saved) + "</span>" : "") + "</div>" +
+        '<p class="card-note">Each round is saved as its own score (numbered 1, 2, 3 for repeats), so they count for records, PBs and handicaps on their own too; the total counts towards the multi-round records. ' +
+        "Blank boxes are skipped. Anything members sent in for the same archer, day, round and bow is replaced by these.</p></form>";
+    }
+    html += "</div>";
+
+    // The scores themselves: search, edit, remove, flags.
+    const q = normName(rk.q || "");
+    let list = (sb.scores || []).filter(function (s) {
+      if (rk.filter === "check" && !(s.status === "" && /^CHECK/.test(s.checker))) return false;
+      if (rk.filter === "members" && !/^member/i.test(s.by)) return false;
+      if (rk.filter === "removed" && s.status !== "removed") return false;
+      if (rk.filter === "all" && s.status === "removed") return false;
+      return !q || normName(s.archer + " " + s.round + " " + s.event + " " + s.date).indexOf(q) !== -1;
+    });
+    const nCheck = (sb.scores || []).filter(function (s) { return s.status === "" && /^CHECK/.test(s.checker); }).length;
+    const total = list.length;
+    list = list.slice(0, rk.show || 50);
+    html += '<div class="card"><h2>Scores</h2><p class="card-note">Newest first. Scores marked <span class="badge">CHECK</span> were flagged by the checker: they count already, so fix or remove them if they\'re wrong, or mark them as fine. ' +
+      "Members' scores replaced by the record keeper's show as superseded.</p>" +
+      '<div class="controls-row">' + segButtons("rk.filter", [["all", "All"], ["check", "To check (" + nCheck + ")"], ["members", "Sent in by members"], ["removed", "Removed"]], rk.filter) +
+      '<label class="ctl">Search <input type="text" data-rk-search value="' + escapeHtml(rk.q || "") + '" autocomplete="off" placeholder="name, round, event or date"></label>' +
+      '<span class="muted small">' + Math.min(total, list.length) + " of " + total + "</span></div>";
+    if (!list.length) html += '<p class="muted small">Nothing here.</p>';
+    else {
+      html += '<div class="table-wide-scroll"><table><thead><tr><th>Date</th><th>Archer</th><th>Score</th><th>From</th><th>Checker</th><th></th></tr></thead><tbody>';
+      list.forEach(function (s) {
+        if (rk.edit === s.id) { html += '<tr class="hist-row"><td colspan="6">' + rkEditForm(s, a) + "</td></tr>"; return; }
+        const flag = /^CHECK/.test(s.checker);
+        html += '<tr><td class="nowrap">' + escapeHtml(s.date) + "</td><td>" + escapeHtml(s.archer) + '<br><span class="muted small">' + escapeHtml(s.category) + "</span></td><td>" +
+          bowDot(s.bow) + escapeHtml(s.bow + " " + s.round) + " <strong>" + s.score + "</strong>" + (s.roundNo ? ' <span class="muted small">#' + s.roundNo + "</span>" : "") +
+          (s.event ? '<br><span class="muted small">' + escapeHtml(s.event) + (s.placing ? ", " + escapeHtml(s.placing) : "") + "</span>" : s.placing ? '<br><span class="muted small">' + escapeHtml(s.placing) + "</span>" : "") +
+          '</td><td class="small">' + rkWho(s.by) + (s.status ? '<br><span class="badge">' + escapeHtml(s.status.toUpperCase()) + "</span>" : "") + '</td><td class="small">' +
+          (flag ? '<span class="badge">CHECK</span> ' + escapeHtml(s.checker.replace(/^CHECK:\s*/, "")) : '<span class="muted">' + escapeHtml(s.checker || "not checked yet") + "</span>") +
+          '</td><td class="nowrap"><button type="button" class="btn" data-rk="edit" data-id="' + escapeHtml(s.id) + '">Edit</button> ' +
+          (s.status === "removed" ? '<button type="button" class="btn" data-rk="restore" data-id="' + escapeHtml(s.id) + '"' + (a.busy ? " disabled" : "") + ">Restore</button>"
+            : '<button type="button" class="btn" data-rk="remove" data-id="' + escapeHtml(s.id) + '"' + (a.busy ? " disabled" : "") + ">Remove</button>") +
+          (flag ? ' <button type="button" class="btn" data-rk="ok" data-id="' + escapeHtml(s.id) + '"' + (a.busy ? " disabled" : "") + ">Looks fine</button>" : "") + "</td></tr>";
+      });
+      html += "</tbody></table></div>";
+      if (total > list.length) html += '<div class="controls-row"><button type="button" class="btn" data-rk="more">Show more</button></div>';
+    }
+    html += '<details><summary class="small">Rename or merge an archer</summary><div class="controls-row">' +
+      '<label class="ctl">From <select data-rk-ren="from">' + (sb.archers || []).map(function (n) { return rkOpt(n, n, rk.renFrom); }).join("") + "</select></label>" +
+      '<label class="ctl">To <input type="text" list="rkArchers" data-rk-ren="to" value="' + escapeHtml(rk.renTo || "") + '"></label>' +
+      '<button type="button" class="btn" data-rk="rename"' + (a.busy ? " disabled" : "") + ">Rename</button></div>" +
+      '<p class="card-note">Changes the name on every score. Renaming to a name already on the list merges the two (for a misspelt name sent in by a member, say).</p></details></div>';
+
+    // Tracker links: a private link to the club score tracker for each archer.
+    if (live && (sb.trackers || []).length) {
+      html += '<div class="card"><h2>Tracker links</h2><p class="card-note">Each archer\'s own link to the club score tracker, reading their scores from the score book. Works for juniors too; only give a link to the archer it belongs to (or their parent).</p>' +
+        '<div class="controls-row"><label class="ctl">Archer <select data-rk-trk>' + rkOpt("", "Choose…", rk.trk) + sb.trackers.map(function (t) { return rkOpt(t.t, t.name, rk.trk); }).join("") + "</select></label>" +
+        (rk.trk ? '<input type="text" readonly value="' + escapeHtml(TRACKER_URL + "?t=" + rk.trk) + '" style="flex:1;min-width:0" onclick="this.select()">' : "") + "</div></div>";
+    }
+    return html;
+  }
+  function rkEditForm(s, a) {
+    const f = state.rk.editForm;
+    return '<form id="rkEdit" data-id="' + escapeHtml(s.id) + '" class="sub-form"><div class="controls-row">' +
+      '<label class="ctl">Archer <input type="text" list="rkArchers" data-rkx="archer" value="' + escapeHtml(f.archer) + '"></label>' +
+      '<label class="ctl">Date <input type="date" data-rkx="date" value="' + escapeHtml(f.date) + '"></label>' +
+      '<label class="ctl">Category <select data-rkx="category">' + RK_CATEGORIES.concat(RK_CATEGORIES.indexOf(f.category) === -1 && f.category ? [f.category] : []).map(function (c) { return rkOpt(c, c, f.category); }).join("") + "</select></label>" +
+      '<label class="ctl">Bow <select data-rkx="bow">' + RK_BOWS.map(function (b) { return rkOpt(b, b, f.bow); }).join("") + "</select></label></div>" +
+      '<div class="controls-row"><label class="ctl">Round <input type="text" list="rkRounds" data-rkx="round" value="' + escapeHtml(f.round) + '"></label>' +
+      '<label class="ctl">Score <input type="number" data-rkx="score" value="' + escapeHtml(String(f.score)) + '" style="width:6em"></label>' +
+      '<label class="ctl">Round no. <input type="number" min="1" data-rkx="roundNo" value="' + escapeHtml(String(f.roundNo || "")) + '" style="width:4em"></label>' +
+      '<label class="ctl">Event <input type="text" data-rkx="event" value="' + escapeHtml(f.event) + '"></label>' +
+      '<label class="ctl">Placing <input type="text" data-rkx="placing" value="' + escapeHtml(f.placing) + '" style="width:5em"></label></div>' +
+      '<div class="controls-row"><label class="ctl" style="flex:1">Notes <input type="text" data-rkx="notes" value="' + escapeHtml(f.notes) + '" style="width:100%"></label></div>' +
+      '<div class="controls-row"><button type="submit" class="btn btn-primary"' + (a.busy ? " disabled" : "") + '>Save changes</button><button type="button" class="btn" data-rk="cancel">Cancel</button></div></form>';
+  }
+
+  function rkInit() {
+    state.rk = state.rk || { mode: "score", form: {}, ev: { event: "", date: "", rounds: ["", "", ""], entries: [{ scores: [] }, { scores: [] }, { scores: [] }] },
+      filter: "all", q: "", show: 50, edit: null, editForm: null, saved: "", badgeYear: null, renFrom: "", renTo: "", trk: "" };
+    return state.rk;
+  }
+
+  (function rkEvents() {
+    const panels = document.getElementById("panels");
+    const keepFocus = function (sel) { const el = document.querySelector(sel); if (el) el.focus(); };
+    panels.addEventListener("click", function (ev) {
+      const b = ev.target.closest("[data-rk]");
+      if (!b || !state.admin || b.disabled) {
+        const p = ev.target.closest("[data-print-badges]");
+        if (p) {
+          document.body.setAttribute("data-printing", "badges");
+          const done = function () { document.body.removeAttribute("data-printing"); window.removeEventListener("afterprint", done); };
+          window.addEventListener("afterprint", done);
+          window.print();
+        }
+        return;
+      }
+      const rk = rkInit(), act = b.dataset.rk, sb = state.admin.data && state.admin.data.scorebook;
+      if (act === "import") {
+        if (window.confirm(sb && sb.rows ? "Import again? This replaces everything in the score book with what is in the workbooks now." : "Copy every member's workbook into the score book?")) adminCall({ action: "importSheets" });
+      } else if (act === "source") {
+        const to = b.dataset.v;
+        if (window.confirm(to === "scorebook" ? "Switch the site to the score book? From now on scores are recorded on the site (or in the score book sheet), not the workbooks."
+          : "Switch the site back to reading the workbooks? Scores recorded in the score book won't show until you switch again.")) adminCall({ action: "setSource", source: to });
+      } else if (act === "check") adminCall({ action: "checkNow" });
+      else if (act === "addRow") { rk.ev.entries.push({ scores: [] }); render(); }
+      else if (act === "more") { rk.show = (rk.show || 50) + 100; render(); }
+      else if (act === "edit") {
+        const s = (sb.scores || []).filter(function (x) { return x.id === b.dataset.id; })[0];
+        if (!s) return;
+        rk.edit = s.id; rk.editForm = { archer: s.archer, date: s.date, category: s.category, bow: s.bow, round: s.round, score: s.score, roundNo: s.roundNo || "", event: s.event, placing: s.placing, notes: s.notes, hits: s.hits, golds: s.golds };
+        render();
+      } else if (act === "cancel") { rk.edit = null; render(); }
+      else if (act === "remove") { if (window.confirm("Remove this score? It stays in the score book marked removed, and can be restored.")) adminCall({ action: "removeScore", id: b.dataset.id }); }
+      else if (act === "restore") adminCall({ action: "restoreScore", id: b.dataset.id });
+      else if (act === "ok") adminCall({ action: "clearFlag", id: b.dataset.id });
+      else if (act === "rename") {
+        const from = rk.renFrom || (sb.archers || [])[0], to = (rk.renTo || "").trim();
+        if (from && to && window.confirm("Rename " + from + " to " + to + " on every score?")) adminCall({ action: "renameArcher", from: from, to: to });
+      }
+    });
+    panels.addEventListener("input", function (ev) {
+      const t = ev.target;
+      if (!state.admin || !state.rk) return;
+      const rk = state.rk;
+      if (t.matches("[data-rkf]")) { rk.form[t.dataset.rkf] = t.value; rk.saved = ""; }
+      else if (t.matches("[data-rke]")) {
+        if (t.dataset.rke === "round") rk.ev.rounds[Number(t.dataset.i)] = t.value; else if (t.dataset.rke !== "n") rk.ev[t.dataset.rke] = t.value;
+        rk.saved = "";
+      } else if (t.matches("[data-rkr]")) {
+        const en = rk.ev.entries[Number(t.dataset.j)];
+        if (t.dataset.rkr === "score") {
+          en.scores[Number(t.dataset.i)] = t.value;
+          const cell = document.querySelector('[data-rk-total="' + t.dataset.j + '"]');
+          if (cell) cell.textContent = en.scores.reduce(function (s, v) { return s + (Number(v) || 0); }, 0) || "";
+        } else en[t.dataset.rkr] = t.value;
+      } else if (t.matches("[data-rkx]")) rk.editForm[t.dataset.rkx] = t.value;
+      else if (t.matches("[data-rk-ren]")) { if (t.dataset.rkRen === "to") rk.renTo = t.value; }
+      else if (t.matches("[data-rk-search]")) {
+        rk.q = t.value; rk.show = 50;
+        const pos = t.selectionStart;
+        render();
+        const el = document.querySelector("[data-rk-search]");
+        if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) { /* ignore */ } }
+      }
+    });
+    panels.addEventListener("change", function (ev) {
+      const t = ev.target;
+      if (!state.admin || !state.rk) return;
+      const rk = state.rk;
+      if (t.matches("select[data-rkf]")) rk.form[t.dataset.rkf] = t.value;
+      else if (t.matches('input[data-rkf="archer"]')) {
+        // Fill in the archer's usual category and bow.
+        const last = rkLatest(t.value);
+        if (last) { rk.form.category = last.category; rk.form.bow = last.bow; setTimeout(function () { render(); keepFocus('[data-rkf="round"]'); }, 0); }
+      } else if (t.matches('select[data-rke="n"]')) {
+        const n = Number(t.value), r = rk.ev.rounds.slice(0, n);
+        while (r.length < n) r.push(r[r.length - 1] || "");
+        rk.ev.rounds = r; render();
+      } else if (t.matches("select[data-rkr]")) rk.ev.entries[Number(t.dataset.j)][t.dataset.rkr] = t.value;
+      else if (t.matches('input[data-rkr="archer"]')) {
+        const j = Number(t.dataset.j), last = rkLatest(t.value), en = rk.ev.entries[j];
+        if (last) { en.category = last.category; en.bow = last.bow; setTimeout(function () { render(); keepFocus('[data-rkr="score"][data-j="' + j + '"]'); }, 0); }
+      } else if (t.matches("select[data-rkx]")) rk.editForm[t.dataset.rkx] = t.value;
+      else if (t.matches("select[data-rk-ren]")) rk.renFrom = t.value;
+      else if (t.matches("select[data-rk-trk]")) { rk.trk = t.value; render(); }
+      else if (t.matches("select[data-rk-badge]")) { rk.badgeYear = Number(t.value); render(); }
+    });
+    panels.addEventListener("submit", function (ev) {
+      const form = ev.target;
+      if (!state.admin || !state.rk || !/^rk/.test(form.id || "")) return;
+      ev.preventDefault();
+      const rk = state.rk;
+      if (form.id === "rkScore") {
+        const f = Object.assign({ date: rkToday(), category: "Male Senior", bow: "Recurve" }, rk.form);
+        adminCall({ action: "addScore", score: f }).then(function () {
+          if (state.admin && !state.admin.msg) { rk.saved = "Saved: " + f.archer + ", " + f.round + " " + f.score; rk.form = { date: f.date, category: f.category, bow: f.bow, round: f.round }; render(); keepFocus('[data-rkf="archer"]'); }
+        });
+      } else if (form.id === "rkEvent") {
+        const e = rk.ev;
+        const body = { event: e.event, date: e.date || rkToday(), rounds: e.rounds, entries: e.entries.filter(function (x) { return (x.archer || "").trim(); }).map(function (x) {
+          return { archer: x.archer, category: x.category || "Male Senior", bow: x.bow || "Recurve", scores: e.rounds.map(function (r, i) { return x.scores[i] || ""; }), placing: x.placing || "" };
+        }) };
+        adminCall({ action: "addEvent", event: body }).then(function () {
+          if (state.admin && !state.admin.msg) { rk.saved = "Saved " + (state.admin.data.saved || "the") + " scores for " + e.event; rk.ev = { event: "", date: "", rounds: e.rounds.map(function () { return ""; }), entries: [{ scores: [] }, { scores: [] }, { scores: [] }] }; render(); }
+        });
+      } else if (form.id === "rkEdit") {
+        const f = Object.assign({ id: form.dataset.id, keeper: true }, rk.editForm);
+        adminCall({ action: "updateScore", score: f }).then(function () { if (state.admin && !state.admin.msg) { rk.edit = null; render(); } });
+      }
+    });
+  })();
 
   // =====================================================================
   // Shared helpers for challenges, history, awards
@@ -4047,12 +4519,14 @@
     if (!d.date) d.date = isoDate(state.now);
     const v = function (k) { return escapeHtml(d[k] === undefined ? "" : String(d[k])); };
     const opt = function (val, label, cur) { return '<option value="' + escapeHtml(val) + '"' + (String(cur) === String(val) ? " selected" : "") + ">" + escapeHtml(label) + "</option>"; };
-    let html = '<div class="card"><h2>Submit a score</h2><p class="card-note">Shot a score you\'d like added to your record? Send it to the club\'s record keeper here. ' +
-      "It goes to them by email; they check it and add it to your score sheet, and it then appears on this site within the hour. " +
+    const live = state.source === "scorebook";
+    let html = '<div class="card"><h2>Submit a score</h2><p class="card-note">Shot a score you\'d like added to your record? ' + (live
+      ? "Send it here and it goes straight onto the site. The record keeper is told, checks anything unusual, and enters club competitions himself. You can still message or email scores to him if you'd rather. "
+      : "Send it to the club\'s record keeper here. It goes to them by email; they check it and add it to your score sheet, and it then appears on this site within the hour. ") +
       "Please submit scores shot at the club, club competitions and open tournaments. If you're under 18, ask a parent or guardian to send it for you.</p>";
     if (!SERVICE_URL) return html + '<p class="card-note">Please give your score to the club\'s record keeper.</p></div>';
     if (d.sent) {
-      return html + '<div class="sub-done"><p class="status-good"><strong>Thanks, your score has been sent to the record keeper.</strong></p><p>' + escapeHtml(d.sent) + "</p>" +
+      return html + '<div class="sub-done"><p class="status-good"><strong>' + (d.live ? "Thanks, your score is on the site." : "Thanks, your score has been sent to the record keeper.") + "</strong></p><p>" + escapeHtml(d.sent) + "</p>" +
         '<button type="button" class="btn" data-sub-again>Submit another score</button></div></div>';
     }
     const rounds = subRoundOptions();
@@ -4069,6 +4543,7 @@
       '<optgroup label="All Archery GB rounds">' + rounds.all.map(function (c) { return opt(c, AGB.round(c).n, d.round); }).join("") + "</optgroup>" +
       '<option value="other"' + (d.round === "other" ? " selected" : "") + ">Another round (type it below)</option></select></div>" +
       (d.round === "other" ? '<div class="span2"><label for="subRoundOther">Round name</label><input type="text" id="subRoundOther" data-sub="roundOther" maxlength="80" value="' + v("roundOther") + '"></div>' : "") +
+      subRoundNoHtml() +
       '<div><label for="subScore">Score</label><input type="number" id="subScore" data-sub="score" inputmode="numeric" min="0" max="2000" value="' + v("score") + '" required></div>' +
       '<div><label for="subHits">Hits <span class="muted">(optional)</span></label><input type="number" id="subHits" data-sub="hits" inputmode="numeric" min="0" max="500" value="' + v("hits") + '"></div>' +
       '<div><label for="subGolds">Golds / 10s <span class="muted">(optional)</span></label><input type="number" id="subGolds" data-sub="golds" inputmode="numeric" min="0" max="500" value="' + v("golds") + '"></div>' +
@@ -4079,9 +4554,25 @@
       '<div class="sub-preview" id="subPreview" aria-live="polite">' + subPreviewHtml() + "</div>" +
       '<input type="text" name="website" id="subWebsite" tabindex="-1" autocomplete="off" class="hp" aria-hidden="true">' +
       '<label class="check"><input type="checkbox" id="subConfirm"> This is my score, or I\'m sending it for the archer with their permission.</label>' +
-      '<button class="btn primary" type="submit">Send to the record keeper</button>' +
+      '<button class="btn primary" type="submit">' + (live ? "Send my score" : "Send to the record keeper") + "</button>" +
       '<p class="optout-msg" id="subMsg" role="status" aria-live="polite"></p></form></div>';
     return html;
+  }
+  // Several of the same round in one day: ask which one this is, so it isn't
+  // taken for a duplicate.
+  function subRoundNoHtml() {
+    const d = state.sub;
+    if (state.source !== "scorebook" || !d.round || d.round === "other" || !d.date || !d.name) return "";
+    const me = state.members.filter(function (m) { return normName(m.name) === normName(d.name); })[0];
+    if (!me) return "";
+    const key = d.round.replace(/_compound|_triple/g, "");
+    const same = me.entries.filter(function (e) { return e.code && roundKey(e) === key && isoDate(e.date) === d.date; }).length;
+    if (!same) { d.roundNo = ""; return ""; }
+    if (!d.roundNo) d.roundNo = String(same + 1);
+    return '<div class="span2"><label for="subRoundNo">You already have ' + (same === 1 ? "a score" : same + " scores") + " on this round that day. Is this another one?</label>" +
+      '<select id="subRoundNo" data-sub="roundNo">' + [1, 2, 3, 4, 5, 6].map(function (n) {
+        return '<option value="' + n + '"' + (String(n) === String(d.roundNo) ? " selected" : "") + ">" + (n === 1 ? "No, it's the same one (a correction)" : "Yes, round " + n + " of the day") + "</option>";
+      }).join("") + "</select></div>";
   }
   function isoDate(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
@@ -4140,13 +4631,13 @@
     const body = {
       action: "submitScore", rid: d.rid, website: document.getElementById("subWebsite").value,
       name: d.name.trim(), email: (d.email || "").trim(), date: d.date, bow: d.bow, category: (d.gender === "Women" ? "Women" : "Men") + ", " + ageLabelText,
-      round: roundName, score: Number(d.score), hits: d.hits || "", golds: d.golds || "", placing: d.placing || "", event: d.event || "", notes: d.notes || "",
+      round: roundName, score: Number(d.score), hits: d.hits || "", golds: d.golds || "", placing: d.placing || "", event: d.event || "", notes: d.notes || "", roundNo: d.roundNo || "",
       checks: subAnalysis().lines.join("\n")
     };
     const slow = new Promise(function (resolve, reject) { setTimeout(function () { reject(new Error("slow")); }, 60000); });
     Promise.race([api(body), slow]).then(function (res) {
       if (!res || !res.ok) throw new Error((res && res.error) || "failed");
-      state.sub = { bow: d.bow, gender: d.gender, age: d.age, name: d.name, email: d.email,
+      state.sub = { bow: d.bow, gender: d.gender, age: d.age, name: d.name, email: d.email, live: !!res.live,
         sent: body.name + ": " + body.round + " " + body.score + " (" + body.bow.toLowerCase() + ", " + fmtDate(new Date(body.date)) + ")." };
       render();
     }).catch(function (err) {
@@ -4476,6 +4967,10 @@
   panels.addEventListener("click", function (ev) {
     const h = ev.target.closest("[data-hist]");
     if (h) { state.rec.open = state.rec.open === h.dataset.hist ? null : h.dataset.hist; render(); const again = document.querySelector('[data-hist="' + h.dataset.hist + '"]'); if (again) again.focus(); return; }
+    const eh = ev.target.closest("[data-evhist]");
+    if (eh) { state.rec.openEv = state.rec.openEv === eh.dataset.evhist ? null : eh.dataset.evhist; render(); const again = document.querySelector('[data-evhist="' + eh.dataset.evhist + '"]'); if (again) again.focus(); return; }
+    const ec = ev.target.closest("[data-evcert]");
+    if (ec && state.evRows) { const r = state.evRows[Number(ec.dataset.evcert)]; if (r) printEventCertificate(r.top[0]); return; }
     const c = ev.target.closest("[data-cert]");
     if (c && state.recRows) { const r = state.recRows[Number(c.dataset.cert)]; if (r) printCertificate(r.top[0]); return; }
     if (ev.target.closest("[data-print-board]")) { printBoard(); return; }
@@ -4501,6 +4996,10 @@
     state.sub[k] = ev.target.value;
     delete state.sub.rid;
     if (k === "round" && (ev.target.value === "other") !== !!document.getElementById("subRoundOther")) { render(); const r = document.getElementById("subRound"); if (r) r.focus(); return true; }
+    // Whether to ask "another round today?" depends on the name, round and date.
+    if (ev.type === "change" && (k === "round" || k === "date" || k === "name") && state.source === "scorebook" && !!subRoundNoHtml() !== !!document.getElementById("subRoundNo")) {
+      const id = ev.target.id; setTimeout(function () { render(); const r = document.getElementById(id); if (r) r.focus(); }, 0); return true;
+    }
     const p = document.getElementById("subPreview");
     if (p) p.innerHTML = subPreviewHtml();
     return true;
@@ -4589,6 +5088,7 @@
       window[cb] = function (res) {
         clearTimeout(timer);
         if (!res || !res.ok || !Array.isArray(res.archers)) { finish({ raw: [], failed: 1 }); return; }
+        state.source = res.source === "scorebook" ? "scorebook" : "sheets";
         finish({ raw: res.archers.map(function (x) { return { id: x.k, name: x.withheld || x.junior ? null : x.name, withheld: !!x.withheld || !!x.junior, junior: !!x.junior, grown: !!x.grown && !x.junior, rows: x.rows || [] }; }), pending: Array.isArray(res.pending) ? res.pending : [], failed: 0 });
       };
       script.onerror = function () { clearTimeout(timer); finish({ raw: [], failed: 1 }); };
