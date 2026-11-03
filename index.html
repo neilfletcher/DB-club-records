@@ -3289,21 +3289,24 @@
         who(n).quiver.push({ badge: def.name + " " + b, score: best[n].score, date: best[n].date, bow: best[n].bow, had: had });
       });
     });
-    // 252: earned when the qualifying score for the bow is shot twice at a
-    // distance; listed the first time an archer earns that distance.
-    const quals = {}, earned = {};
+    // 252: a distance is earned when the qualifying score for the bow is shot
+    // twice there. One badge per archer, whatever the bow: the longest distance
+    // earned this season, and only if longer than any they had already earned.
+    const quals = {}, before = {}, season = {};
     list.slice().sort(function (a, b) { return a.date - b.date; }).forEach(function (x) {
       if (!x.ladderDist || x.score === null) return;
       const t = (LADDER_BADGE_SCORE[x.bow] || {})[x.ladderDist] || LADDER_BADGE_DEFAULT;
       if (x.score < t) return;
       const k = x.name + "|" + x.ladderDist + "|" + x.bow;
       quals[k] = (quals[k] || 0) + 1;
-      const ek = x.name + "|" + x.ladderDist;
-      if (quals[k] === LADDER_BADGE_COUNT && !earned[ek]) earned[ek] = x;
+      if (quals[k] !== LADDER_BADGE_COUNT) return;
+      if (x.date <= prevEnd) { if (!before[x.name] || x.ladderDist > before[x.name]) before[x.name] = x.ladderDist; }
+      else if (x.date <= r.to) { if (!season[x.name] || x.ladderDist > season[x.name].ladderDist) season[x.name] = x; }
     });
-    Object.keys(earned).forEach(function (ek) {
-      const x = earned[ek];
-      if (x.date > prevEnd && x.date <= r.to) who(x.name).ladder.push({ badge: "252 at " + x.ladderDist + " yds", date: x.date, bow: x.bow });
+    Object.keys(season).forEach(function (n) {
+      const x = season[n];
+      if (before[n] && before[n] >= x.ladderDist) return;
+      who(n).ladder.push({ badge: "252 at " + x.ladderDist + " yds", date: x.date, bow: x.bow, had: before[n] || null });
     });
     return Object.keys(people).map(function (n) { return people[n]; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
   }
@@ -3328,7 +3331,7 @@
     rows.forEach(function (p) { p.quiver.concat(p.ladder).forEach(function (b) { counts[b.badge] = (counts[b.badge] || 0) + 1; }); });
     let html = '<div class="card print-target" id="badgeReport"><h2>Badge report: ' + escapeHtml(winterLabel(rk.badgeYear)) + "</h2>" +
       '<p class="card-note">Frostbite, Portsmouth and Worcester quiver badges for each archer\'s best score of the winter season (the same values for every bow), listed only when better than the badge their best score in an earlier winter would have earned. ' +
-      "252 badges are listed the first time an archer earns a distance (the qualifying score shot twice), between the end of last winter and the end of this one." +
+      "One 252 badge per archer, whatever the bow: the longest distance earned (the qualifying score shot twice) between the end of last winter and the end of this one, if longer than any they had already earned." +
       (state.admin.data.scorebook && state.admin.data.scorebook.source === "scorebook" ? "" : " Until the score book is live, juniors show without names here.") + "</p>" +
       '<div class="controls-row no-print"><label class="ctl">Season <select data-rk-badge>' + seasons.map(function (s) {
         return '<option value="' + s + '"' + (s === rk.badgeYear ? " selected" : "") + ">" + winterLabel(s) + "</option>";
@@ -3338,7 +3341,7 @@
       return "<tr><td>" + escapeHtml(p.name) + "</td><td>" + p.quiver.map(function (b) {
         return "<strong>" + escapeHtml(b.badge) + '</strong> <span class="muted small">(' + b.score + " " + b.bow.toLowerCase() + ", " + fmtDate(b.date) + (b.had !== null ? "; had " + b.had : "") + ")</span>";
       }).concat(p.ladder.map(function (b) {
-        return "<strong>" + escapeHtml(b.badge) + '</strong> <span class="muted small">(' + b.bow.toLowerCase() + ", " + fmtDate(b.date) + ")</span>";
+        return "<strong>" + escapeHtml(b.badge) + '</strong> <span class="muted small">(' + b.bow.toLowerCase() + ", " + fmtDate(b.date) + (b.had ? "; had " + b.had + " yds" : "") + ")</span>";
       })).join("<br>") + "</td></tr>";
     }).join("") + "</tbody></table></div>" +
       '<h3>To hand out</h3><p class="small">' + Object.keys(counts).sort().map(function (k) { return escapeHtml(k) + " × " + counts[k]; }).join(" · ") + "</p></div>";
@@ -3384,17 +3387,18 @@
       sb.rows + " scores, " + (sb.archers || []).length + " archers" + (sb.importedAt ? "; last imported " + fmtDate(new Date(sb.importedAt)) : "") + "." +
       (sb.url ? ' <a href="' + escapeHtml(sb.url) + '" target="_blank" rel="noopener">Open the score book sheet</a>.' : "") + "</p>" +
       (isAdmin ? '<div class="controls-row">' +
-        '<button type="button" class="btn" data-rk="import"' + (a.busy ? " disabled" : "") + ">" + (sb.rows ? "Import again from the workbooks" : "Import from the workbooks") + "</button>" +
+        (sb.rows || sb.importedAt ? "" : '<button type="button" class="btn" data-rk="import"' + (a.busy ? " disabled" : "") + ">Import from the workbooks</button>") +
         (live ? '<button type="button" class="btn" data-rk="source" data-v="sheets"' + (a.busy ? " disabled" : "") + ">Switch back to the workbooks</button>"
           : '<button type="button" class="btn" data-rk="source" data-v="scorebook"' + (a.busy || !sb.rows ? " disabled" : "") + ">Switch the site to the score book</button>") +
         '<button type="button" class="btn" data-rk="check"' + (a.busy ? " disabled" : "") + ">Check new scores now</button></div>" +
-        (live ? '<p class="small status-warn">Importing again replaces everything in the score book, including scores entered since the switch.</p>' : "") : "") + "</div>";
+        (!live && (sb.rows || sb.importedAt) ? '<details class="small"><summary>Start again from the workbooks</summary><p class="status-warn">This throws away everything in the score book, including anything recorded or edited since the import, and copies the workbooks in again.</p>' +
+          '<button type="button" class="btn" data-rk="import"' + (a.busy ? " disabled" : "") + ">Replace the score book</button></details>" : "") : "") + "</div>";
     if (!live && !sb.rows) return html;
 
     // Record a score / a competition.
     html += '<div class="card"><h2>Record scores</h2>' + rkLists(sb) + '<div class="controls-row">' +
       segButtons("rk.mode", [["score", "One score"], ["event", "A competition"]], rk.mode) + "</div>";
-    if (!live) html += '<p class="small status-warn">The site isn\'t reading the score book yet, so scores recorded here won\'t show until it is switched over (and importing again would replace them).</p>';
+    if (!live) html += '<p class="small status-warn">The site isn\'t reading the score book yet, so scores recorded here won\'t show until it is switched over (and starting again from the workbooks would replace them).</p>';
     if (rk.mode === "score") {
       const f = rk.form;
       html += '<form id="rkScore" class="sub-form"><div class="controls-row">' +
@@ -3525,7 +3529,11 @@
       }
       const rk = rkInit(), act = b.dataset.rk, sb = state.admin.data && state.admin.data.scorebook;
       if (act === "import") {
-        if (window.confirm(sb && sb.rows ? "Import again? This replaces everything in the score book with what is in the workbooks now." : "Copy every member's workbook into the score book?")) adminCall({ action: "importSheets" });
+        if (sb && sb.source === "scorebook") return;
+        if (sb && (sb.rows || sb.importedAt)) {
+          const t = window.prompt("This replaces everything in the score book with what is in the workbooks now. Type REPLACE to carry on.");
+          if (t && t.trim().toUpperCase() === "REPLACE") adminCall({ action: "importSheets", confirm: "REPLACE" });
+        } else if (window.confirm("Copy every member's workbook into the score book?")) adminCall({ action: "importSheets" });
       } else if (act === "source") {
         const to = b.dataset.v;
         if (window.confirm(to === "scorebook" ? "Switch the site to the score book? From now on scores are recorded on the site (or in the score book sheet), not the workbooks."
