@@ -2788,6 +2788,7 @@
       // list (and the public data) follows in the background.
       if (res.light) {
         if (a.data) { a.data.scorebook = res.scorebook; a.data.saved = res.saved; } else a.data = res;
+        reapplyPending(a);
         a.email = res.email || a.email;
         adminRefresh();
         return null;
@@ -2815,28 +2816,40 @@
     const n = (a.refreshN = (a.refreshN || 0) + 1);
     api({ token: a.token, action: "list" }).then(function (res) {
       if (state.admin !== a || n !== a.refreshN || !res || !res.ok) return;
-      const keep = a.data && a.data.scorebook, pendingSave = keep && (keep.scores || []).some(function (x) { return x.saving; });
-      return applyAdminResult(a, res).then(function () { if (pendingSave && keep) a.data.scorebook = keep; render(); });
+      return applyAdminResult(a, res).then(function () { reapplyPending(a); render(); });
     }).catch(function () { /* the next change or reload catches up */ });
   }
   // A quick score change: shown straight away, saved in the background, put
   // back if the save fails.
+  // Changes still saving are kept here, so a reply to one change (or the
+  // background refresh) doesn't undo another that's still on its way.
+  function reapplyPending(a) {
+    const pend = state.rk.pending || {}, sb = a && a.data && a.data.scorebook;
+    if (!sb) return;
+    (sb.scores || []).forEach(function (x) { if (pend[x.id]) { pend[x.id](x); x.saving = true; } });
+  }
   function rkQuick(body, apply) {
     const a = state.admin, rk = state.rk, sb = (a && a.data && a.data.scorebook) || {};
     const id = body.id || (body.score && body.score.id);
     const s = (sb.scores || []).filter(function (x) { return x.id === id; })[0];
     const before = s ? JSON.parse(JSON.stringify(s)) : null;
+    rk.pending = rk.pending || {};
+    rk.pending[id] = apply;
     if (s) { apply(s); s.saving = true; }
     rk.notice = ""; render();
     api(Object.assign({ token: a.token }, body)).then(function (res) {
       if (!res || !res.ok) throw new Error(res && res.error === "not-admin" ? "your sign-in has expired; please sign in again" : (res && res.error) || "the request failed");
+      delete rk.pending[id];
       if (state.admin !== a) return;
       if (res.scorebook) a.data.scorebook = res.scorebook; else if (s) delete s.saving;
-      rk.notice = "Saved.";
+      reapplyPending(a);
+      rk.notice = Object.keys(rk.pending).length ? "Saving…" : "Saved.";
       render();
       adminRefresh();
     }).catch(function (err) {
-      if (s && before) { Object.keys(s).forEach(function (k) { delete s[k]; }); Object.assign(s, before); }
+      delete rk.pending[id];
+      const cur = ((a.data && a.data.scorebook && a.data.scorebook.scores) || []).filter(function (x) { return x.id === id; })[0] || s;
+      if (cur && before) { Object.keys(cur).forEach(function (k) { delete cur[k]; }); Object.assign(cur, before); }
       rk.notice = "Not saved: " + (err.message || String(err));
       render();
     });
