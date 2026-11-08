@@ -4587,7 +4587,9 @@
     const rounds = subRoundOptions();
     html += '<form class="optout-form sub-form" id="scoreForm" novalidate autocomplete="on">' +
       '<div class="sub-grid">' +
-      '<div><label for="subName">Your name</label><input type="text" id="subName" data-sub="name" autocomplete="name" maxlength="80" value="' + v("name") + '" required></div>' +
+      '<div><label for="subName">Your name</label><input type="text" id="subName" data-sub="name" autocomplete="name" list="subNames" maxlength="80" value="' + v("name") + '" required>' +
+        '<datalist id="subNames">' + state.members.filter(function (m) { return m.name && !m.junior && !m.withheld; }).map(function (m) { return '<option value="' + escapeHtml(m.name) + '">'; }).join("") + "</datalist>" +
+        '<p class="small muted">Your full name, as on your score sheet.</p></div>' +
       '<div><label for="subEmail">Your email <span class="muted">(optional, so the record keeper can reply)</span></label><input type="email" id="subEmail" data-sub="email" autocomplete="email" maxlength="120" value="' + v("email") + '"></div>' +
       '<div><label for="subDate">Date shot</label><input type="date" id="subDate" data-sub="date" max="' + isoDate(state.now) + '" value="' + v("date") + '" required></div>' +
       '<div><label for="subBow">Bow type</label><select id="subBow" data-sub="bow">' + ["Recurve", "Barebow", "Compound", "Longbow", "Flatbow"].map(function (b) { return opt(b, b, d.bow); }).join("") + "</select></div>" +
