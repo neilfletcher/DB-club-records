@@ -4339,10 +4339,10 @@
       '<button class="btn" type="submit"' + (a.busy ? " disabled" : "") + '>Add</button><button class="btn" type="button" data-admin="rebuild"' + (a.busy ? " disabled" : "") + ">Re-read all sheets now</button></form>";
     html += '<div class="table-scroll"><table><thead><tr><th>Sheet</th><th>State</th><th>Age from</th><th class="num">Scores</th><th></th></tr></thead><tbody>';
     sheets.slice().sort(function (x, y) { return String(x.name || "~").localeCompare(String(y.name || "~")); }).forEach(function (s) {
-      html += "<tr><td>" + (s.name ? escapeHtml(s.name) : '<span class="muted">' + (s.state === "junior" ? "Under-18 sheet" : "Unnamed") + "</span>") + ' <span class="muted small">' + escapeHtml(s.id.slice(0, 8)) + "…</span></td><td>" +
+      html += "<tr><td>" + (s.name ? escapeHtml(s.name) : '<span class="muted">' + (s.state === "junior" ? "Under-18 sheet" : "Unnamed") + "</span>") + (s.id ? ' <span class="muted small">' + escapeHtml(String(s.id).slice(0, 8)) + "…</span>" : "") + "</td><td>" +
         (s.state === "ok" ? '<span class="status-good">Shown</span>' : s.state === "error" ? '<span class="status-warn">' + SHEET_STATE.error + "</span>" : '<span class="muted">' + (SHEET_STATE[s.state] || s.state) + "</span>") +
         "</td><td>" + (s.age === "dob" ? "Date of birth" : s.age === "category" ? '<span class="muted">Category</span>' : "") +
-        '</td><td class="num">' + (s.rows || s.juniorRows || 0) + '</td><td><button type="button" class="linkish" data-admin="removeSheet" data-id="' + escapeHtml(s.id) + '"' + (a.busy ? " disabled" : "") + ">Remove</button></td></tr>";
+        '</td><td class="num">' + (s.rows || s.juniorRows || 0) + "</td><td>" + (s.id ? '<button type="button" class="linkish" data-admin="removeSheet" data-id="' + escapeHtml(String(s.id)) + '"' + (a.busy ? " disabled" : "") + ">Remove</button>" : "") + "</td></tr>";
     });
     return html + "</tbody></table></div></div>";
   }
@@ -4591,8 +4591,8 @@
     const rounds = subRoundOptions();
     html += '<form class="optout-form sub-form" id="scoreForm" novalidate autocomplete="on">' +
       '<div class="sub-grid">' +
-      '<div><label for="subName">Your name</label><div class="sugg-wrap"><input type="text" id="subName" data-sub="name" autocomplete="off" maxlength="80" value="' + v("name") + '" required aria-autocomplete="list" aria-controls="subNameSugg">' +
-        '<div id="subNameSugg" class="sugg" role="listbox" hidden></div></div>' +
+      '<div><label for="subArcher">Archer</label><div class="sugg-wrap"><input type="text" id="subArcher" data-sub="name" autocomplete="off" data-lpignore="true" data-1p-ignore data-form-type="other" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="subArcherSugg" spellcheck="false" maxlength="80" value="' + v("name") + '" required>' +
+        '<div id="subArcherSugg" class="sugg" role="listbox" hidden></div></div>' +
         '<p class="small muted">Your full name, as on your score sheet.</p></div>' +
       '<div><label for="subEmail">Your email <span class="muted">(optional, so the record keeper can reply)</span></label><input type="email" id="subEmail" data-sub="email" autocomplete="email" maxlength="120" value="' + v("email") + '"></div>' +
       '<div><label for="subDate">Date shot</label><input type="date" id="subDate" data-sub="date" max="' + isoDate(state.now) + '" value="' + v("date") + '" required></div>' +
@@ -5078,7 +5078,7 @@
   // Name suggestions for the score form: adult, named archers whose name (or
   // any part of it) starts with what has been typed.
   function nameSuggest(input) {
-    const box = document.getElementById("subNameSugg");
+    const box = document.getElementById("subArcherSugg");
     if (!box) return;
     const q = normName(input.value);
     let list = [];
@@ -5089,22 +5089,23 @@
     }
     box.innerHTML = list.map(function (n) { return '<button type="button" role="option" data-sugg="' + escapeHtml(n) + '">' + escapeHtml(n) + "</button>"; }).join("");
     box.hidden = !list.length;
+    input.setAttribute("aria-expanded", list.length ? "true" : "false");
   }
   panels.addEventListener("mousedown", function (ev) {
     const b = ev.target.closest("[data-sugg]");
     if (!b) return;
     ev.preventDefault();
-    const input = document.getElementById("subName");
+    const input = document.getElementById("subArcher");
     input.value = b.dataset.sugg;
-    document.getElementById("subNameSugg").hidden = true;
+    document.getElementById("subArcherSugg").hidden = true;
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
   });
   panels.addEventListener("focusout", function (ev) {
-    if (ev.target.id === "subName") setTimeout(function () { const b = document.getElementById("subNameSugg"); if (b) b.hidden = true; }, 150);
+    if (ev.target.id === "subArcher") setTimeout(function () { const b = document.getElementById("subArcherSugg"); if (b) b.hidden = true; }, 150);
   });
   panels.addEventListener("keydown", function (ev) {
-    if (ev.target.id === "subName" && ev.key === "Escape") { const b = document.getElementById("subNameSugg"); if (b) b.hidden = true; }
+    if (ev.target.id === "subArcher" && ev.key === "Escape") { const b = document.getElementById("subArcherSugg"); if (b) b.hidden = true; }
   });
   panels.addEventListener("input", function (ev) {
     if (ev.target.matches('[data-oe="score"]')) {
