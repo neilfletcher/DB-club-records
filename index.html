@@ -848,6 +848,10 @@
     .hero-spark .ss-label { text-align: left; }
   }
   .mobile-status { display: none; font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+.sugg-wrap { position: relative; }
+.sugg { position: absolute; z-index: 20; left: 0; right: 0; top: 100%; margin-top: 4px; background: var(--surface-1); border: 1px solid var(--border-strong, var(--gridline)); border-radius: 8px; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+.sugg button { display: block; width: 100%; text-align: left; padding: 9px 12px; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; }
+.sugg button:hover, .sugg button:focus { background: var(--surface-3); }
 </style>
 </head>
 <body>
@@ -4587,8 +4591,8 @@
     const rounds = subRoundOptions();
     html += '<form class="optout-form sub-form" id="scoreForm" novalidate autocomplete="on">' +
       '<div class="sub-grid">' +
-      '<div><label for="subName">Your name</label><input type="text" id="subName" data-sub="name" autocomplete="name" list="subNames" maxlength="80" value="' + v("name") + '" required>' +
-        '<datalist id="subNames">' + state.members.filter(function (m) { return m.name && !m.junior && !m.withheld; }).map(function (m) { return '<option value="' + escapeHtml(m.name) + '">'; }).join("") + "</datalist>" +
+      '<div><label for="subName">Your name</label><div class="sugg-wrap"><input type="text" id="subName" data-sub="name" autocomplete="off" maxlength="80" value="' + v("name") + '" required aria-autocomplete="list" aria-controls="subNameSugg">' +
+        '<div id="subNameSugg" class="sugg" role="listbox" hidden></div></div>' +
         '<p class="small muted">Your full name, as on your score sheet.</p></div>' +
       '<div><label for="subEmail">Your email <span class="muted">(optional, so the record keeper can reply)</span></label><input type="email" id="subEmail" data-sub="email" autocomplete="email" maxlength="120" value="' + v("email") + '"></div>' +
       '<div><label for="subDate">Date shot</label><input type="date" id="subDate" data-sub="date" max="' + isoDate(state.now) + '" value="' + v("date") + '" required></div>' +
@@ -4939,6 +4943,15 @@
   const NAV_GROUPS = ["Club", "Archers", "Competition", "Members"];
   // mode: "enter" when arriving at a tab (cards and charts animate in),
   // "charts" when a filter changes, otherwise "none" (forms, refreshes).
+  // A page that fails to draw says so (with the error) rather than freezing.
+  function safeBuild(cur) {
+    try { return cur.build(); } catch (err) {
+      console.error("Page failed to draw:", err);
+      if (state.admin) state.admin.busy = false;
+      return '<div class="card"><h2>Something went wrong</h2><p class="card-note">This page hit an error while drawing. Please send this to the site admin:</p><pre class="small" style="white-space:pre-wrap">' +
+        escapeHtml(String(err && err.stack || err).split("\n").slice(0, 4).join("\n")) + "</pre></div>";
+    }
+  }
   function render(mode) {
     destroyCharts();
     state.anim = animMode(mode || "none");
@@ -4961,7 +4974,7 @@
     const cur = TABS.filter(function (t) { return t.id === state.tab; })[0];
     document.getElementById("viewTitle").textContent = cur.id === "overview" ? "Club overview" : cur.label;
     document.getElementById("crumbs").textContent = CLUB_NAME + " · " + (cur.group || "Site") ;
-    document.getElementById("panels").innerHTML = '<section class="panel" role="tabpanel" id="panel-' + cur.id + '" aria-labelledby="tab-' + cur.id + '">' + cur.build() + "</section>";
+    document.getElementById("panels").innerHTML = '<section class="panel" role="tabpanel" id="panel-' + cur.id + '" aria-labelledby="tab-' + cur.id + '">' + safeBuild(cur) + "</section>";
     if (state.anim === "enter") setupEntrance(document.getElementById("panel-" + cur.id));
     document.querySelectorAll(".heat-wrap").forEach(function (w) { w.scrollLeft = w.scrollWidth; });
     try { if (cur.draw) cur.draw(); } catch (err) { console.error("Chart drawing failed:", err); }
@@ -5057,10 +5070,42 @@
     if (ev.type === "change" && (k === "round" || k === "date" || k === "name") && state.source === "scorebook" && !!subRoundNoHtml() !== !!document.getElementById("subRoundNo")) {
       const id = ev.target.id; setTimeout(function () { render(); const r = document.getElementById(id); if (r) r.focus(); }, 0); return true;
     }
+    if (k === "name") nameSuggest(ev.target);
     const p = document.getElementById("subPreview");
     if (p) p.innerHTML = subPreviewHtml();
     return true;
   }
+  // Name suggestions for the score form: adult, named archers whose name (or
+  // any part of it) starts with what has been typed.
+  function nameSuggest(input) {
+    const box = document.getElementById("subNameSugg");
+    if (!box) return;
+    const q = normName(input.value);
+    let list = [];
+    if (q.length >= 2) {
+      list = state.members.filter(function (m) { return m.name && !m.junior && !m.withheld; }).map(function (m) { return m.name; })
+        .filter(function (n) { const k = normName(n); return k !== q && (k.indexOf(q) === 0 || k.split(" ").some(function (w) { return w.indexOf(q) === 0; })); })
+        .sort().slice(0, 6);
+    }
+    box.innerHTML = list.map(function (n) { return '<button type="button" role="option" data-sugg="' + escapeHtml(n) + '">' + escapeHtml(n) + "</button>"; }).join("");
+    box.hidden = !list.length;
+  }
+  panels.addEventListener("mousedown", function (ev) {
+    const b = ev.target.closest("[data-sugg]");
+    if (!b) return;
+    ev.preventDefault();
+    const input = document.getElementById("subName");
+    input.value = b.dataset.sugg;
+    document.getElementById("subNameSugg").hidden = true;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  panels.addEventListener("focusout", function (ev) {
+    if (ev.target.id === "subName") setTimeout(function () { const b = document.getElementById("subNameSugg"); if (b) b.hidden = true; }, 150);
+  });
+  panels.addEventListener("keydown", function (ev) {
+    if (ev.target.id === "subName" && ev.key === "Escape") { const b = document.getElementById("subNameSugg"); if (b) b.hidden = true; }
+  });
   panels.addEventListener("input", function (ev) {
     if (ev.target.matches('[data-oe="score"]')) {
       state.oneEnd.score = ev.target.value;
