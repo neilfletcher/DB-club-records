@@ -3453,6 +3453,7 @@
     if (/^member/i.test(by)) return "Member";
     if (/^keeper/i.test(by)) return "Record keeper";
     if (/^import/i.test(by)) return "Imported";
+    if (/^workbook/i.test(by)) return "Workbook";
     return "Sheet";
   }
 
@@ -3461,7 +3462,7 @@
     if (!sb) return "";
     const isAdmin = a.data.role !== "recorder", live = sb.source === "scorebook", rk = state.rk;
     let html = '<div class="card"><h2>Score book</h2><p class="card-note">' + (live
-      ? "The site reads the club's score book: scores recorded here, sent in by members, or typed straight into the score book sheet show within a minute or so. "
+      ? "The site reads the club's score book: scores recorded here, sent in by members, or typed straight into the score book sheet show within a minute or so. Scores still added to the old workbooks are copied in every hour (or press Fetch and check now). "
       : "The site still reads the record keeper's workbooks. Import them into the score book, try it out, then switch the site over when you're happy. ") +
       sb.rows + " scores, " + (sb.archers || []).length + " archers" + (sb.importedAt ? "; last imported " + fmtDate(new Date(sb.importedAt)) : "") + "." +
       (sb.url ? ' <a href="' + escapeHtml(sb.url) + '" target="_blank" rel="noopener">Open the score book sheet</a>.' : "") + "</p>" +
@@ -3469,9 +3470,11 @@
         (sb.rows || sb.importedAt ? "" : '<button type="button" class="btn" data-rk="import"' + (a.busy ? " disabled" : "") + ">Import from the workbooks</button>") +
         (live ? '<button type="button" class="btn" data-rk="source" data-v="sheets"' + (a.busy ? " disabled" : "") + ">Switch back to the workbooks</button>"
           : '<button type="button" class="btn" data-rk="source" data-v="scorebook"' + (a.busy || !sb.rows ? " disabled" : "") + ">Switch the site to the score book</button>") +
-        '<button type="button" class="btn" data-rk="check"' + (a.busy ? " disabled" : "") + ">Check new scores now</button></div>" +
+        '<button type="button" class="btn" data-rk="check"' + (a.busy ? " disabled" : "") + ">Fetch and check now</button></div>" +
         (!live && (sb.rows || sb.importedAt) ? '<details class="small"><summary>Start again from the workbooks</summary><p class="status-warn">This throws away everything in the score book, including anything recorded or edited since the import, and copies the workbooks in again.</p>' +
-          '<button type="button" class="btn" data-rk="import"' + (a.busy ? " disabled" : "") + ">Replace the score book</button></details>" : "") : "") + "</div>";
+          '<button type="button" class="btn" data-rk="import"' + (a.busy ? " disabled" : "") + ">Replace the score book</button></details>" : "")
+        : live ? '<div class="controls-row"><button type="button" class="btn" data-rk="check"' + (a.busy ? " disabled" : "") + ">Fetch from the workbooks and check now</button></div>" : "") +
+      (rk.fetched ? '<p class="small status-good">' + escapeHtml(rk.fetched) + "</p>" : "") + "</div>";
     if (!live && !sb.rows) return html;
 
     // Record a score / a competition.
@@ -3618,7 +3621,13 @@
         const to = b.dataset.v;
         if (window.confirm(to === "scorebook" ? "Switch the site to the score book? From now on scores are recorded on the site (or in the score book sheet), not the workbooks."
           : "Switch the site back to reading the workbooks? Scores recorded in the score book won't show until you switch again.")) adminCall({ action: "setSource", source: to });
-      } else if (act === "check") adminCall({ action: "checkNow" });
+      } else if (act === "check") {
+        rk.fetched = "";
+        adminCall({ action: "checkNow" }).then(function () {
+          const n = state.admin && state.admin.data && state.admin.data.synced;
+          if (state.admin && !state.admin.msg) { rk.fetched = n ? "Copied " + n + " new score" + (n === 1 ? "" : "s") + " from the workbooks, and checked." : "Nothing new in the workbooks; scores checked."; render(); }
+        });
+      }
       else if (act === "addRow") { rk.ev.entries.push({ scores: [] }); render(); }
       else if (act === "more") { rk.show = (rk.show || 50) + 100; render(); }
       else if (act === "edit") {
