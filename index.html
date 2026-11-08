@@ -2784,6 +2784,20 @@
         if (res && res.error === "not-admin") { state.admin = { error: "That Google account isn't an admin for this site, or your sign-in has expired. Please sign in again." }; render(); return null; }
         throw new Error((res && res.error) || "The request failed.");
       }
+      // Score changes come back quickly with just the score book; the full
+      // list (and the public data) follows in the background.
+      if (res.light) {
+        if (a.data) { a.data.scorebook = res.scorebook; a.data.saved = res.saved; } else a.data = res;
+        a.email = res.email || a.email;
+        adminRefresh();
+        return null;
+      }
+      return applyAdminResult(a, res);
+    }).catch(function (err) {
+      a.msg = err.message || String(err);
+    }).then(function () { if (state.admin === a) { a.busy = false; render(); } });
+  }
+  function applyAdminResult(a, res) {
       a.data = res;
       // Scores removed in admin drop off the public list straight away.
       if (Array.isArray(res.pending)) { const live = {}; res.pending.forEach(function (p) { live[p.id] = true; }); state.pending = (state.pending || []).filter(function (p) { return live[p.id]; }); }
@@ -2793,9 +2807,39 @@
       a.email = res.email || a.email;
       if (res.status) setPrivacy(res.status);
       return refreshShown().then(function () { setStatus(statusText("settings saved")); });
+  }
+  // Fetch the full admin list without blocking the page (after a score change).
+  function adminRefresh() {
+    const a = state.admin;
+    if (!a || !a.token) return;
+    const n = (a.refreshN = (a.refreshN || 0) + 1);
+    api({ token: a.token, action: "list" }).then(function (res) {
+      if (state.admin !== a || n !== a.refreshN || !res || !res.ok) return;
+      const keep = a.data && a.data.scorebook, pendingSave = keep && (keep.scores || []).some(function (x) { return x.saving; });
+      return applyAdminResult(a, res).then(function () { if (pendingSave && keep) a.data.scorebook = keep; render(); });
+    }).catch(function () { /* the next change or reload catches up */ });
+  }
+  // A quick score change: shown straight away, saved in the background, put
+  // back if the save fails.
+  function rkQuick(body, apply) {
+    const a = state.admin, rk = state.rk, sb = (a && a.data && a.data.scorebook) || {};
+    const id = body.id || (body.score && body.score.id);
+    const s = (sb.scores || []).filter(function (x) { return x.id === id; })[0];
+    const before = s ? JSON.parse(JSON.stringify(s)) : null;
+    if (s) { apply(s); s.saving = true; }
+    rk.notice = ""; render();
+    api(Object.assign({ token: a.token }, body)).then(function (res) {
+      if (!res || !res.ok) throw new Error(res && res.error === "not-admin" ? "your sign-in has expired; please sign in again" : (res && res.error) || "the request failed");
+      if (state.admin !== a) return;
+      if (res.scorebook) a.data.scorebook = res.scorebook; else if (s) delete s.saving;
+      rk.notice = "Saved.";
+      render();
+      adminRefresh();
     }).catch(function (err) {
-      a.msg = err.message || String(err);
-    }).then(function () { if (state.admin === a) { a.busy = false; render(); } });
+      if (s && before) { Object.keys(s).forEach(function (k) { delete s[k]; }); Object.assign(s, before); }
+      rk.notice = "Not saved: " + (err.message || String(err));
+      render();
+    });
   }
 
   function onGoogleCredential(response) {
@@ -3491,7 +3535,8 @@
       "Members' scores replaced by the record keeper's show as superseded.</p>" +
       '<div class="controls-row">' + segButtons("rk.filter", [["all", "All"], ["check", "To check (" + nCheck + ")"], ["members", "Sent in by members"], ["removed", "Removed"]], rk.filter) +
       '<label class="ctl">Search <input type="text" data-rk-search value="' + escapeHtml(rk.q || "") + '" autocomplete="off" placeholder="name, round, event or date"></label>' +
-      '<span class="muted small">' + Math.min(total, list.length) + " of " + total + "</span></div>";
+      '<span class="muted small">' + Math.min(total, list.length) + " of " + total + "</span>" +
+      (rk.notice ? ' <span class="small ' + (/^Not saved/.test(rk.notice) ? "status-warn" : "status-good") + '">' + escapeHtml(rk.notice) + "</span>" : "") + "</div>";
     if (!list.length) html += '<p class="muted small">Nothing here.</p>';
     else {
       html += '<div class="table-wide-scroll"><table><thead><tr><th>Date</th><th>Archer</th><th>Score</th><th>From</th><th>Checker</th><th></th></tr></thead><tbody>';
@@ -3502,7 +3547,7 @@
           bowDot(s.bow) + escapeHtml(s.bow + " " + s.round) + " <strong>" + s.score + "</strong>" + (s.roundNo ? ' <span class="muted small">#' + s.roundNo + "</span>" : "") +
           (s.event ? '<br><span class="muted small">' + escapeHtml(s.event) + (s.placing ? ", " + escapeHtml(s.placing) : "") + "</span>" : s.placing ? '<br><span class="muted small">' + escapeHtml(s.placing) + "</span>" : "") +
           '</td><td class="small">' + rkWho(s.by) + (s.status ? '<br><span class="badge">' + escapeHtml(s.status.toUpperCase()) + "</span>" : "") + '</td><td class="small">' +
-          (flag ? '<span class="badge">CHECK</span> ' + escapeHtml(s.checker.replace(/^CHECK:\s*/, "")) : '<span class="muted">' + escapeHtml(s.checker || "not checked yet") + "</span>") +
+          (s.saving ? '<span class="muted">Saving…</span>' : flag ? '<span class="badge">CHECK</span> ' + escapeHtml(s.checker.replace(/^CHECK:\s*/, "")) : '<span class="muted">' + escapeHtml(s.checker || "not checked yet") + "</span>") +
           '</td><td class="nowrap"><button type="button" class="btn" data-rk="edit" data-id="' + escapeHtml(s.id) + '">Edit</button> ' +
           (s.status === "removed" ? '<button type="button" class="btn" data-rk="restore" data-id="' + escapeHtml(s.id) + '"' + (a.busy ? " disabled" : "") + ">Restore</button>"
             : '<button type="button" class="btn" data-rk="remove" data-id="' + escapeHtml(s.id) + '"' + (a.busy ? " disabled" : "") + ">Remove</button>") +
@@ -3582,9 +3627,9 @@
         rk.edit = s.id; rk.editForm = { archer: s.archer, date: s.date, category: s.category, bow: s.bow, round: s.round, score: s.score, roundNo: s.roundNo || "", event: s.event, placing: s.placing, notes: s.notes, hits: s.hits, golds: s.golds };
         render();
       } else if (act === "cancel") { rk.edit = null; render(); }
-      else if (act === "remove") { if (window.confirm("Remove this score? It stays in the score book marked removed, and can be restored.")) adminCall({ action: "removeScore", id: b.dataset.id }); }
-      else if (act === "restore") adminCall({ action: "restoreScore", id: b.dataset.id });
-      else if (act === "ok") adminCall({ action: "clearFlag", id: b.dataset.id });
+      else if (act === "remove") { if (window.confirm("Remove this score? It stays in the score book marked removed, and can be restored.")) rkQuick({ action: "removeScore", id: b.dataset.id }, function (s) { s.status = "removed"; }); }
+      else if (act === "restore") rkQuick({ action: "restoreScore", id: b.dataset.id }, function (s) { s.status = ""; });
+      else if (act === "ok") rkQuick({ action: "clearFlag", id: b.dataset.id }, function (s) { s.checker = "OK (" + (state.admin.email || "you") + ")"; });
       else if (act === "rename") {
         const from = rk.renFrom || (sb.archers || [])[0], to = (rk.renTo || "").trim();
         if (from && to && window.confirm("Rename " + from + " to " + to + " on every score?")) adminCall({ action: "renameArcher", from: from, to: to });
@@ -3657,7 +3702,11 @@
         });
       } else if (form.id === "rkEdit") {
         const f = Object.assign({ id: form.dataset.id, keeper: true }, rk.editForm);
-        adminCall({ action: "updateScore", score: f }).then(function () { if (state.admin && !state.admin.msg) { rk.edit = null; render(); } });
+        rk.edit = null;
+        rkQuick({ action: "updateScore", score: f }, function (s) {
+          ["archer", "date", "category", "bow", "round", "event", "placing", "notes"].forEach(function (k) { s[k] = f[k] || ""; });
+          s.score = Number(f.score); s.roundNo = Number(f.roundNo) || 0; s.checker = "";
+        });
       }
     });
   })();
