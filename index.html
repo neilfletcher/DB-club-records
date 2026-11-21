@@ -3116,7 +3116,7 @@
   // 252s too (the same as the official one unless 252s change it); otherwise the
   // average of the ratings they have so far (rounded down). Not official, so
   // shown with a mark. Returns { h, early } or null.
-  function standInHcp(m, bow, loc, when) {
+  function standInHcp(m, bow, loc, when, noSwap) {
     // 252s count for everyone (the record keeper's rule): the club handicap
     // is the official one worked out again with 252s included, and is marked
     // only where it differs.
@@ -3128,7 +3128,14 @@
     if (v !== null) return { h: v, early: v !== h, official: h };
     if (h !== null) return { h: h, early: false };
     const rs = list.filter(function (e) { return e.loc === loc && e.date <= when && hcpCountsLoose(e) && hcOf(e) !== null; }).map(hcOf);
-    return rs.length ? { h: avgDown(rs), early: true } : null;
+    if (rs.length) return { h: avgDown(rs), early: true };
+    // Nothing at all with this bow outdoors (or indoors): use their scores
+    // with the same bow at the other kind of venue.
+    if (!noSwap) {
+      const o = standInHcp(m, bow, loc === "indoor" ? "outdoor" : "indoor", when, true);
+      if (o) return { h: o.h, early: true, swapped: loc === "indoor" ? "outdoor" : "indoor" };
+    }
+    return null;
   }
   function locLabel(loc) { return loc === "indoor" ? "indoor" : "outdoor"; }
 
@@ -3197,14 +3204,15 @@
       if (m.junior || m.withheld) return;
       Object.keys(m.byBow).forEach(function (b) {
         if (!DISCIPLINE_COLOR[b] || (a.bow !== "all" && b !== a.bow)) return;
-        const shot = m.byBow[b].filter(function (e) { return e.loc === loc && hcpCountsLoose(e); });
+        let shot = m.byBow[b].filter(function (e) { return e.loc === loc && hcpCountsLoose(e); });
+        if (!shot.length) shot = m.byBow[b].filter(function (e) { return hcpCountsLoose(e); });
         const active = shot.some(function (e) { return e.date >= yearAgo; });
         if (!active && !a.inactive) return;
         const si = standInHcp(m, b, loc, state.now), hc = si ? si.h : null;
         if (hc === null && !active) return;
         const code = oeCode(a.round, b), r = AGB.round(code);
         const pred = hc === null ? null : r.table[Math.min(hc, r.table.length - 1)];
-        rows.push({ m: m, bow: b, hc: hc, early: !!(si && si.early), official: si ? si.official : null, allowance: pred === null ? null : 1440 - pred, pred: pred, active: active });
+        rows.push({ m: m, bow: b, hc: hc, early: !!(si && si.early), official: si ? si.official : null, swapped: si ? si.swapped : null, allowance: pred === null ? null : 1440 - pred, pred: pred, active: active });
       });
     });
     return rows.sort(function (x, y) { return x.m.name.localeCompare(y.m.name) || x.bow.localeCompare(y.bow); });
@@ -3216,7 +3224,7 @@
     const opt = function (v, label, cur) { return '<option value="' + escapeHtml(String(v)) + '"' + (String(v) === String(cur) ? " selected" : "") + ">" + escapeHtml(label) + "</option>"; };
     let html = '<div class="card print-target" id="allowances"><h2>Handicap allowances: ' + escapeHtml(info.n) + '</h2><p class="card-note">Each archer\'s current ' + info.loc +
       " handicap for that bow, the allowance it gives on this round (1440 minus the score the handicap predicts) and the predicted score. Add the allowance to the score shot to get the handicap-adjusted score. " +
-      "Handicaps here count 252s too, as the record keeper's own sheets do. † differs from the archer\'s official Archery GB handicap (shown when you hover), or is from fewer than three scores. Archers with no scores to go on can be given one from their first ends with the quick handicap below. Juniors aren't listed by name; work theirs out with the quick handicap. As at " + fmtDate(state.now) + ".</p>" +
+      "Handicaps here count 252s too, as the record keeper's own sheets do. † differs from the archer\'s official Archery GB handicap (shown when you hover), is from fewer than three scores, or comes from their indoor scores with that bow when they have no outdoor ones (or the other way round). Archers with no scores to go on can be given one from their first ends with the quick handicap below. Juniors aren't listed by name; work theirs out with the quick handicap. As at " + fmtDate(state.now) + ".</p>" +
       '<div class="controls-row no-print"><label class="ctl">Round <select data-allow="round">' +
       (opts.club.length ? '<optgroup label="Rounds the club shoots">' + opts.club.map(function (c) { return opt(c, AGB.round(c).n, a.round); }).join("") + "</optgroup>" : "") +
       '<optgroup label="All Archery GB rounds">' + opts.all.map(function (c) { return opt(c, AGB.round(c).n, a.round); }).join("") + "</optgroup></select></label>" +
@@ -3227,7 +3235,7 @@
     html += '<div class="table-wide-scroll"><table><thead><tr><th>Archer</th><th>Bow</th><th class="num">Handicap</th><th class="num">Allowance</th><th class="num">Predicted score</th></tr></thead><tbody>' +
       rows.map(function (r) {
         return "<tr><td>" + escapeHtml(r.m.name) + (r.active ? "" : ' <span class="badge">INACTIVE</span>') + '</td><td class="nowrap">' + bowDot(r.bow) + r.bow +
-          '</td><td class="num">' + (r.hc === null ? '<span class="muted small">none yet</span>' : "<strong>" + r.hc + "</strong>" + (r.early ? '<span title="' + (r.official !== null && r.official !== undefined ? "Official handicap " + r.official + "; 252s bring it to " + r.hc : "Club handicap from fewer than three scores, or from 252s") + '">†</span>' : "")) +
+          '</td><td class="num">' + (r.hc === null ? '<span class="muted small">none yet</span>' : "<strong>" + r.hc + "</strong>" + (r.early ? '<span title="' + (r.swapped ? "No " + (r.swapped === "indoor" ? "outdoor" : "indoor") + " scores with this bow, so this comes from their " + r.swapped + " ones" : r.official !== null && r.official !== undefined ? "Official handicap " + r.official + "; 252s bring it to " + r.hc : "Club handicap from fewer than three scores, or from 252s") + '">†</span>' : "")) +
           '</td><td class="num">' + (r.allowance === null ? "-" : r.allowance) + '</td><td class="num">' + (r.pred === null ? "-" : r.pred + ' <span class="muted small">/ ' + info.max + "</span>") + "</td></tr>";
       }).join("") + "</tbody></table></div></div>";
     return html;
